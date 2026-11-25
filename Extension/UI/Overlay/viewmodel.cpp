@@ -47,6 +47,7 @@ struct Shared {
     std::mutex mutex;
     std::uint64_t serial{}; // which load is wanted; a reading that finishes for an older one is dropped
     Status status{Status::none};
+    bool render_ready{};
     std::string why;
     std::shared_ptr<const Loaded> loaded;
     Look look;
@@ -155,21 +156,18 @@ void make_levels(Picture& picture) {
     }
 }
 
-void read_in_background(std::filesystem::path file, std::uint64_t serial) {
-    auto loaded = std::make_shared<Loaded>();
-    std::string why;
+bool read_model(const std::filesystem::path& file, Loaded& loaded, std::size_t& picture_bytes_held, std::string& why) {
     std::string bytes;
     bool ok = read_file(file, most_file_bytes, bytes, why);
     if (ok) {
         auto model = parse(bytes, why);
         ok = model.has_value();
-        if (ok) loaded->model = std::move(*model);
+        if (ok) loaded.model = std::move(*model);
     }
     if (ok) {
-        loaded->pictures.resize(loaded->model.materials.size() * 3);
-        std::size_t picture_bytes_held = 0;
-        for (std::size_t m = 0; ok && m < loaded->model.materials.size(); ++m) {
-            const auto& material = loaded->model.materials[m];
+        loaded.pictures.resize(loaded.model.materials.size() * 3);
+        for (std::size_t m = 0; ok && m < loaded.model.materials.size(); ++m) {
+            const auto& material = loaded.model.materials[m];
             const std::array<const std::string*, 3> names{&material.albedo, &material.normal, &material.surface};
             for (std::size_t k = 0; k < 3; ++k) {
                 if (names[k]->empty()) continue;
@@ -179,7 +177,7 @@ void read_in_background(std::filesystem::path file, std::uint64_t serial) {
                     break;
                 }
                 std::string picture_bytes;
-                auto& picture = loaded->pictures[m * 3 + k];
+                auto& picture = loaded.pictures[m * 3 + k];
                 if (!read_file(file.parent_path() / *names[k], most_picture_bytes, picture_bytes, why)) {
                     ok = false;
                     break;
@@ -198,6 +196,30 @@ void read_in_background(std::filesystem::path file, std::uint64_t serial) {
                     break;
                 }
             }
+        }
+    }
+    return ok;
+}
+
+void read_in_background(std::filesystem::path file, std::vector<std::filesystem::path> attachments, std::uint64_t serial) {
+    auto loaded = std::make_shared<Loaded>();
+    std::string why;
+    std::size_t picture_bytes = 0;
+    bool ok = read_model(file, *loaded, picture_bytes, why);
+    for (const auto& path : attachments) {
+        if (!ok) break;
+        {
+            auto& state = shared();
+            std::lock_guard lock(state.mutex);
+            if (state.serial != serial) return;
+        }
+        Loaded attachment;
+        ok = read_model(path, attachment, picture_bytes, why) && append_model(loaded->model, std::move(attachment.model), why);
+        if (ok) {
+            loaded->pictures.insert(loaded->pictures.end(), std::make_move_iterator(attachment.pictures.begin()),
+                                    std::make_move_iterator(attachment.pictures.end()));
+        } else {
+            why = path.filename().string() + ": " + why;
         }
     }
     auto& s = shared();
@@ -599,18 +621,19 @@ std::array<float, 3> unit(std::array<float, 3> v, std::array<float, 3> fallback)
 }
 } // namespace
 
-void load(const std::filesystem::path& file) {
+void load(const std::filesystem::path& file, const std::vector<std::filesystem::path>& attachments) {
     auto& s = shared();
     std::uint64_t serial{};
     {
         std::lock_guard lock(s.mutex);
         serial = ++s.serial;
+        s.render_ready = false;
         s.status = Status::loading;
         s.why.clear();
         s.loaded.reset();
         s.animator.stop();
     }
-    std::thread(read_in_background, file, serial).detach();
+    std::thread(read_in_background, file, attachments, serial).detach();
 }
 
 void unload() {
@@ -629,6 +652,7 @@ Info info() {
     std::lock_guard lock(s.mutex);
     Info out;
     out.status = s.status;
+    out.render_ready = s.loaded && s.render_ready;
     out.why = s.why;
     if (s.loaded) {
         for (const auto& clip : s.loaded->model.clips) out.clips.push_back({clip.name, clip.duration()});
@@ -794,7 +818,7 @@ bool record(const Target& t) noexcept {
             const std::size_t first = std::size_t{part.material} * 3;
             const unsigned textures = (g.textures[first] ? 1u : 0u) | (g.textures[first+1] ? 2u : 0u) | (g.textures[first+2] ? 4u : 0u);
             const unsigned flags = textures | ((material.faces & 0x70u) << 1) | ((material.faces & 128u) ? 512u : 0u) |
-                ((material.faces & 3u) ? 0u : 256u) | (model.version >= 2 ? 1024u : 0u);
+                ((material.faces & 3u) ? 0u : 256u) | (material.extended ? 1024u : 0u);
             t.commands->SetPipelineState(g.pipelines[(material.faces & 3) + (material.opacity < 1 ? 3 : 0)].Get());
             t.commands->SetGraphicsRoot32BitConstants(3, 12, part.transform.data(), 0);
             t.commands->SetGraphicsRoot32BitConstants(0, 12, material.layers.data(), 0);
@@ -830,6 +854,9 @@ bool record(const Target& t) noexcept {
         std::stable_sort(glass.begin(), glass.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         for (const auto& entry : glass) draw(*entry.second);
         transition(t.commands, t.buffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        auto& state = shared();
+        std::lock_guard lock(state.mutex);
+        if (state.loaded == loaded) state.render_ready = true;
         return true;
     } catch (...) {
         say_failed("an exception was raised while drawing it.");
@@ -838,6 +865,11 @@ bool record(const Target& t) noexcept {
 }
 
 void release() noexcept {
+    {
+        auto& state = shared();
+        std::lock_guard lock(state.mutex);
+        state.render_ready = false;
+    }
     auto& g = gpu();
     // The overlay waits for the GPU before it tears down, so nothing here is still in use.
     g.retired.clear();

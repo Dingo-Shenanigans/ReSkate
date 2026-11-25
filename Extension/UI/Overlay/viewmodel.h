@@ -28,12 +28,13 @@ struct Look {
 
 // ---- client thread ----------------------------------------------------------------------------------
 // Starts reading the model (and its pictures, beside it) in the background, replacing any other.
-void load(const std::filesystem::path& file);
+void load(const std::filesystem::path& file, const std::vector<std::filesystem::path>& attachments = {});
 // Forgets the model; nothing is drawn until another is loaded.
 void unload();
 enum class Status { none, loading, ready, failed };
 struct Info {
     Status status{Status::none};
+    bool render_ready{}; // First draw recorded for this load on the current device.
     std::string why;  // failed: what was wrong
     struct ClipInfo {
         std::string name;

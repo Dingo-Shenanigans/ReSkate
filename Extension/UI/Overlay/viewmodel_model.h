@@ -50,6 +50,7 @@ struct Material {
     std::string name, albedo, normal, surface;
     float roughness{0.5f}, specular{0.5f}, opacity{1};
     std::uint8_t faces{};
+    bool extended{}; // v2 and later define alpha cutouts and face orientation.
     std::array<std::array<float, 4>, 3> layers{}; // v4 coordinate, combine, intensity and tint
 };
 struct Part {
@@ -82,6 +83,8 @@ struct Model {
 std::optional<Model> parse(std::string_view bytes, std::string& why);
 
 Affine multiply(const Affine& a, const Affine& b) noexcept;
+// Append static geometry to the base rig. Its clip frames keep their original bone stride.
+bool append_model(Model& model, Model attachment, std::string& why);
 // a and b weighted: b's share is `t`. Enough for the short fades between clips.
 Affine blend(const Affine& a, const Affine& b, float t) noexcept;
 // The 3x4 of a placement: moved by `offset` (metres) after turning by yaw (about y), pitch (about x)

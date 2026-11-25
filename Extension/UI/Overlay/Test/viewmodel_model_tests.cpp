@@ -228,6 +228,23 @@ int main(int argc, char** argv) {
         clock.pose(*model, 12.1, skin);
         expect(near(skin[1][3], 0.5f), "loop advances from the requested time");
     }
+    {
+        std::string why;
+        auto base = parse(small_model(), why).value();
+        auto attachment = parse(small_model({.version = 4}), why).value();
+        expect(!append_model(base, attachment, why), "attachments with clips are refused");
+        attachment.clips.clear();
+        expect(!append_model(base, attachment, why), "ambiguous bone names are refused");
+        attachment.bones[0].name = "Accessory";
+        attachment.bones[1].name = "Lens";
+        expect(append_model(base, attachment, why), "a static attachment joins the animated base");
+        expect(base.bones.size() == 4 && base.bones[3].parent == 2 && base.vertices[3].joints[0] == 3 &&
+               base.indices[3] == 3 && base.parts[1].first == 3 && base.parts[1].material == 1, "attachment references are rebased");
+        expect(!base.materials[0].extended && base.materials[1].extended, "mixed-version materials keep their semantics");
+        std::array<Affine, 4> skin{};
+        sample(base, base.clips[0], 0.15, false, skin);
+        expect(near(skin[1][3], 1.5f) && skin[2] == identity && skin[3] == identity, "base animation and static attachment share a pose");
+    }
     reads_a_model_and_samples_its_clip();
     refuses_broken_files();
     fades_between_clips();

@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstring>
 #include <numbers>
+#include <iterator>
+#include <unordered_set>
 
 namespace dingosdk::viewmodel {
 namespace {
@@ -100,6 +102,7 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
         material.roughness = std::clamp(r.value<float>(), 0.0f, 1.0f);
         material.specular = std::clamp(r.value<float>(), 0.0f, 1.0f);
         if (version >= 2) {
+            material.extended = true;
             material.opacity = r.value<float>();
             material.faces = r.value<std::uint8_t>();
             if (!(material.opacity >= 0 && material.opacity <= 1) || (material.faces & 3) == 3 ||
@@ -175,6 +178,47 @@ Affine multiply(const Affine& a, const Affine& b) noexcept {
     return out;
 }
 
+bool append_model(Model& base, Model addition, std::string& why) {
+    const auto fail = [&](const char* message) {
+        why = message;
+        return false;
+    };
+    if (!addition.clips.empty()) return fail("a rig attachment has no animation clips");
+    if (base.bones.size() + addition.bones.size() > max_bones || base.materials.size() + addition.materials.size() > max_materials ||
+        base.parts.size() + addition.parts.size() > 4096 || base.vertices.size() + addition.vertices.size() > 1'000'000 ||
+        base.indices.size() + addition.indices.size() > 3'000'000)
+        return fail("the combined model exceeds its geometry limits");
+    std::unordered_set<std::string> names;
+    for (const auto& bone : base.bones)
+        names.insert(bone.name);
+    for (const auto& bone : addition.bones)
+        if (!names.insert(bone.name).second) return fail("attachment bone names must be unique");
+    names.clear();
+    for (const auto& part : base.parts)
+        if (!part.name.empty()) names.insert(part.name);
+    for (const auto& part : addition.parts)
+        if (!part.name.empty() && !names.insert(part.name).second) return fail("attachment part names must be unique");
+    const auto bones = base.bones.size(), vertices = base.vertices.size(), indices = base.indices.size(), materials = base.materials.size();
+    for (auto& bone : addition.bones)
+        if (bone.parent >= 0) bone.parent = static_cast<std::int16_t>(bone.parent + bones);
+    for (auto& vertex : addition.vertices)
+        for (int j = 0; j < 4; ++j)
+            if (vertex.weights[j]) vertex.joints[j] = static_cast<std::uint8_t>(vertex.joints[j] + bones);
+    for (auto& index : addition.indices)
+        index += static_cast<std::uint32_t>(vertices);
+    for (auto& part : addition.parts) {
+        part.material += static_cast<std::uint32_t>(materials);
+        part.first += static_cast<std::uint32_t>(indices);
+    }
+    base.bones.insert(base.bones.end(), std::make_move_iterator(addition.bones.begin()), std::make_move_iterator(addition.bones.end()));
+    base.materials.insert(base.materials.end(), std::make_move_iterator(addition.materials.begin()),
+                          std::make_move_iterator(addition.materials.end()));
+    base.parts.insert(base.parts.end(), std::make_move_iterator(addition.parts.begin()), std::make_move_iterator(addition.parts.end()));
+    base.vertices.insert(base.vertices.end(), addition.vertices.begin(), addition.vertices.end());
+    base.indices.insert(base.indices.end(), addition.indices.begin(), addition.indices.end());
+    return true;
+}
+
 Affine blend(const Affine& a, const Affine& b, float t) noexcept {
     Affine out;
     for (std::size_t i = 0; i < out.size(); ++i) out[i] = a[i] + (b[i] - a[i]) * t;
@@ -200,7 +244,9 @@ Affine placement(const std::array<float, 3>& offset, float yaw, float pitch, flo
 
 void sample(const Model& model, const Clip& clip, double seconds, bool loop, std::span<Affine> out) {
     const std::size_t bones = std::min(out.size(), model.bones.size());
-    const std::size_t per_frame = model.bones.size() * 12;
+    const std::size_t per_frame = clip.skin.size() / clip.frames;
+    const auto animated = std::min(bones, per_frame / 12);
+    std::fill(out.begin() + animated, out.begin() + bones, identity);
     double frame = std::max(0.0, seconds) * clip.fps;
     const double last = static_cast<double>(clip.frames - 1);
     if (clip.frames > 1 && loop) frame = std::fmod(frame, last); // the last frame is the first again
@@ -208,7 +254,7 @@ void sample(const Model& model, const Clip& clip, double seconds, bool loop, std
     const auto a = static_cast<std::size_t>(frame);
     const std::size_t b = std::min<std::size_t>(a + 1, clip.frames - 1);
     const float t = static_cast<float>(frame - static_cast<double>(a));
-    for (std::size_t i = 0; i < bones; ++i) {
+    for (std::size_t i = 0; i < animated; ++i) {
         Affine first, second;
         std::memcpy(first.data(), clip.skin.data() + a * per_frame + i * 12, sizeof first);
         std::memcpy(second.data(), clip.skin.data() + b * per_frame + i * 12, sizeof second);
