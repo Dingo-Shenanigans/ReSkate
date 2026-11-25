@@ -1227,6 +1227,11 @@ struct FakeGame final : Game {
     bool hold_waves{}; // keep each sound's wave, as a voice still playing does
     std::vector<std::shared_ptr<const Wave>> held_waves;
     std::uint64_t play_sound(std::string_view plugin, SoundStart sound) override {
+        if (sound.stream) {
+            calls.push_back(std::format("music {} {} {} {} {} {}", plugin, sound.stream->rate, sound.stream->frames(), sound.loop,
+                                        sound.music_loop.first, sound.music_loop.frames));
+            return ++sound_ids;
+        }
         calls.push_back(std::format("sound {} {} {:.2f} {:.2f} {}{}", plugin, sound.wave ? std::to_string(sound.wave->samples.size()) : "motor", sound.volume,
                                     sound.pitch, sound.loop, sound.position ? std::format(" at {} {} {}", (*sound.position)[0], (*sound.position)[1], (*sound.position)[2]) : sound.listener ? " at listener" : ""));
         if (hold_waves && sound.wave) held_waves.push_back(std::move(sound.wave));
@@ -7992,6 +7997,36 @@ void plugins_play_their_own_sounds() {
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
+void plugins_stream_packaged_music() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("music", {{manifest_file, manifest(R"("console", "audio")")}, {"music.wav", wave_file(8000, 4000)},
+        {"plugin/main.lua", R"(
+            reskate.console.command("track", "x", function()
+                assert(not pcall(reskate.audio.play, "../music.wav", {stream=true}))
+                assert(not pcall(reskate.audio.play, "motor", {stream=true}))
+                local id, why = reskate.audio.play("music.wav", {stream=true, loop=true, loop_from=0.125, loop_length=0.25})
+                if id then
+                    assert(reskate.audio.playing(id))
+                    assert(reskate.audio.set(id, {volume=0.3}))
+                    reskate.audio.stop(id)
+                else
+                    assert(why == "file-backed audio is available on Windows clients")
+                end
+                reskate.log("checked track")
+            end)
+        )"}}), script("quiet", R"(
+            local ok, why = pcall(reskate.audio.play, "music.wav", {stream=true})
+            assert(not ok and string.find(tostring(why), 'needs the "audio" permission', 1, true))
+            reskate.log("permission checked")
+        )", "")});
+    host.run_console("track");
+    check(environment.logged("permission checked") && environment.logged("checked track"), environment.all());
+#if defined(_WIN32)
+    check(environment.fake.called("music music 8000 4000 true 1000 2000") && environment.fake.called("stop sound music 1"), environment.all());
+#endif
+}
+
 void plugins_play_any_number_of_different_sounds() {
     // "play <round> <names...>" logs "<round> played <name>" or "<round> refused <name>: <why>".
     const auto play = R"(
@@ -9921,6 +9956,7 @@ int main() {
         run(plugins_play_their_own_sounds);
         run(plugins_play_ima_adpcm_sounds);
         run(plugins_play_any_number_of_different_sounds);
+        run(plugins_stream_packaged_music);
         run(plugins_have_menu_panels);
         run(plugins_have_pages);
         run(plugins_spatialize_the_station);

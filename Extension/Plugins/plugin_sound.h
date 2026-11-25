@@ -1,5 +1,6 @@
 #pragma once
 #include "plugin_wave.h"
+#include "plugin_stream_wave.h"
 #include "Extension/Skater/motor_synth.h"
 #include <array>
 #include <cstdint>
@@ -13,6 +14,8 @@
 // are), so the level's mix, echo and walls apply. In a level only. Client thread.
 namespace dingosdk::plugin_sound {
 struct Voice {
+    std::shared_ptr<const plugins::StreamWave> stream;
+    plugins::MusicLoop music_loop;
     std::string owner;
     std::shared_ptr<const plugins::Wave> wave; // empty: the motor
     float volume{1}, pitch{1};

@@ -1,4 +1,5 @@
 #include "plugin_sound.h"
+#include "plugin_music.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Multiplayer/Voice/native_voice.h"
 #include "Extension/Skater/client_source_spawn.h"
@@ -28,6 +29,7 @@ constexpr float longest_frame = 0.1f, tail_seconds = 0.4f;
 
 struct Playing {
     Voice voice;
+    MusicSource music; // Release the source before its mapped samples.
     double cursor{};
     // Seconds of the sound the game holds beyond what it has played, as far as can be told: what
     // was made, less the time gone by. Each frame makes it up to the lead again, however long the
@@ -68,6 +70,17 @@ std::uint64_t start(Voice voice) {
     if (mine >= most_each || p.voices.size() >= most_all) return 0;
     const auto id = p.next_id++;
     Playing playing;
+    if (voice.stream) {
+        unsigned total = 0, owned = 0;
+        for (const auto& [key, active] : p.voices) {
+            if (!active.music) continue;
+            ++total;
+            if (active.voice.owner == voice.owner) ++owned;
+        }
+        if (owned >= 2 || total >= 8) return 0;
+        playing.music = play_music(*voice.stream, voice.loop, voice.music_loop, voice.volume, voice.pitch);
+        if (!playing.music) return 0;
+    }
     playing.voice = std::move(voice);
     p.voices.emplace(id, std::move(playing));
     return id;
@@ -79,11 +92,23 @@ Voice* find(std::uint64_t id, std::string_view owner) {
 }
 void stop(std::uint64_t id, std::string_view owner) {
     auto& p = player();
-    if (const auto found = p.voices.find(id); found != p.voices.end() && found->second.voice.owner == owner) found->second.ended = true;
+    if (const auto found = p.voices.find(id); found != p.voices.end() && found->second.voice.owner == owner) {
+        if (found->second.music) p.voices.erase(found);
+        else found->second.ended = true;
+    }
 }
 void stop_all(std::string_view owner) {
-    for (auto& [id, playing] : player().voices)
-        if (playing.voice.owner == owner) playing.ended = true;
+    auto& voices = player().voices;
+    for (auto it = voices.begin(); it != voices.end();) {
+        if (it->second.voice.owner == owner) {
+            if (it->second.music) {
+                it = voices.erase(it);
+                continue;
+            }
+            it->second.ended = true;
+        }
+        ++it;
+    }
 }
 
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
@@ -120,6 +145,18 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         for (auto it = p.voices.begin(); it != p.voices.end();) {
             auto& [id, playing] = *it;
             auto& v = playing.voice;
+            if (playing.music) {
+                XAUDIO2_VOICE_STATE state{};
+                playing.music->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+                if (!state.BuffersQueued) {
+                    it = p.voices.erase(it);
+                    continue;
+                }
+                playing.music->SetVolume(v.volume);
+                playing.music->SetFrequencyRatio(v.pitch);
+                ++it;
+                continue;
+            }
             const auto at = v.listener ? ear : v.position ? *v.position : skater ? *skater : ear;
             const float d = distance(ear, at), range = std::max(v.range, 1.0f);
             const float fall = std::clamp(1.0f - d / range, 0.0f, 1.0f);

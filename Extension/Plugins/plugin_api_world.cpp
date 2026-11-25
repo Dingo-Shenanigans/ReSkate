@@ -2870,11 +2870,46 @@ struct WorldApi {
         need(L, plugin, "audio", "reskate.audio.play");
         const auto what = checked_text(L, 1, 200, "a sound");
         SoundStart start;
-        if (what != "motor") start.wave = wave_at(L, plugin, what);
         sound_options(L, 2, &start, nullptr);
+        bool stream = false;
+        if (lua_istable(L, 2)) {
+            lua_getfield(L, 2, "stream");
+            if (!lua_isnil(L, -1)) stream = luaL_checkboolean(L, -1) != 0;
+            lua_pop(L, 1);
+        }
+        if (stream && what == "motor") luaL_error(L, "a stream plays a packaged PCM WAVE");
+        if (stream && start.position) luaL_error(L, "streamed music plays at the listener");
+        if (!stream && what != "motor") start.wave = wave_at(L, plugin, what);
         if (!within(plugin.services_.now_ms(), plugin.wave_second_, plugin.wave_starts_, 60)) return result(L, "more than 60 sounds in a second");
+        if (stream) {
+            const auto seconds = [&](const char* key) -> std::optional<double> {
+                lua_getfield(L, 2, key);
+                std::optional<double> value;
+                if (!lua_isnil(L, -1)) {
+                    const double n = luaL_checknumber(L, -1);
+                    if (!(n >= 0 && n <= 1200)) luaL_error(L, "%s must be between 0 and 1200 seconds", key);
+                    value = n;
+                }
+                lua_pop(L, 1);
+                return value;
+            };
+            const auto from = seconds("loop_from"), length = seconds("loop_length");
+            if ((from || length) && !start.loop) luaL_error(L, "loop points require loop=true");
+            std::string why;
+            start.stream = open_stream_wave(package_file(L, plugin, what), why);
+            if (!start.stream) return result(L, why);
+            if (from || length) {
+                const auto frames = static_cast<std::uint32_t>(start.stream->frames());
+                const auto at = static_cast<std::uint32_t>(std::llround(from.value_or(0) * start.stream->rate));
+                if (at >= frames) return result(L, "loop starts outside the track");
+                const auto count = length ? static_cast<std::uint32_t>(std::llround(*length * start.stream->rate)) : frames - at;
+                if (!count || count > frames - at) return result(L, "loop length is outside the track");
+                start.music_loop = {at, count};
+            }
+            start.listener = true;
+        }
         const auto id = game_of(plugin).play_sound(plugin.id(), std::move(start));
-        if (!id) return result(L, "it plays 128 sounds already, or there is no level");
+        if (!id) return result(L, stream ? "no music voice available" : "it plays 128 sounds already, or there is no level");
         lua_pushnumber(L, static_cast<double>(id));
         return 1;
     }

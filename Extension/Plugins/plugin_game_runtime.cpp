@@ -1308,6 +1308,8 @@ public:
         plugin_sound::Voice voice;
         voice.owner = plugin;
         voice.wave = std::move(sound.wave);
+        voice.stream = std::move(sound.stream);
+        voice.music_loop = sound.music_loop;
         voice.volume = sound.volume;
         voice.pitch = sound.pitch;
         voice.range = sound.range;
