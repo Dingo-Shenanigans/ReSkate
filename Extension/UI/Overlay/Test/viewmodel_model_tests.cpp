@@ -209,6 +209,7 @@ int main(int argc, char** argv) {
         const auto model = parse(small_model({.version = version}), why);
         expect(model && model->materials[0].opacity == 0.75f, "extended material");
         if (!model) continue;
+        expect(model->version == version, "renderer can select legacy material semantics by version");
         if (version >= 3) expect(model->parts[0].transform == moved(1, 2, 3), "named part transform");
         if (version == 4) expect(model->vertices[1].uv2[0] == 0.25f && model->materials[0].layers[2][1] == 2, "third texture layer");
         Animator clock;

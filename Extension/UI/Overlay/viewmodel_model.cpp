@@ -82,6 +82,7 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
     if (indices == 0 || indices % 3 != 0 || indices > 3'000'000) return bad("a viewmodel's indices are whole triangles, at most 1000000");
     if (clips > 64) return bad("a viewmodel has at most 64 clips");
     Model model;
+    model.version = version;
     model.bones.resize(bones);
     for (auto& bone : model.bones) {
         bone.name = r.text();

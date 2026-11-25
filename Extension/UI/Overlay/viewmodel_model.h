@@ -66,6 +66,7 @@ struct Clip {
 };
 
 struct Model {
+    unsigned version{1};
     std::vector<Bone> bones;
     std::vector<Material> materials;
     std::vector<Part> parts;
