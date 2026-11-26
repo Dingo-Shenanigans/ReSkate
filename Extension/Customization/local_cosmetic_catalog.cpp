@@ -153,7 +153,7 @@ CosmeticShared make_cosmetic_catalog(const profile::Snapshot& snapshot) {
         reinterpret_cast<std::uintptr_t>(&cosmetic_map_free),
         reinterpret_cast<std::uintptr_t>(&cosmetic_map_deleter)};
     const auto& items = cosmetic_runtime().items;
-    if (items.empty() || items.size() > 8192) throw std::runtime_error("Invalid local catalog size");
+    if (items.empty() || items.size() > profile::installed_item_limit) throw std::runtime_error("Invalid local catalog size");
     auto owner = std::make_unique<CosmeticCatalogOwner>();
     owner->vtable = table.data();
     owner->nodes.resize(items.size());
@@ -295,7 +295,7 @@ void publish_cosmetic_inventory() {
         !read(inventory + 0x1b0, service) || service ||
         !read(inventory + 0x1d0, bound_catalog) || (bound_catalog && bound_catalog != ownables) ||
         !read(inventory + 0x1c8, data_model) || !data_model ||
-        !read(inventory + 0x10c, count) || count > 8192) return;
+        !read(inventory + 0x10c, count) || count > profile::installed_item_limit) return;
     if (!bound_catalog) {
         // Offline UI setup can construct inventory before our catalog exists.
         // The native binder stores a borrowed OwnableData pointer at +0x1d0; without a
@@ -312,7 +312,7 @@ void publish_cosmetic_inventory() {
         count == c.published_inventory_count) return;
 
     const auto ids = cosmetic_owned_ids(*s.store->shared_snapshot());
-    if (ids.size() > 8192) throw std::runtime_error("Invalid local cosmetic inventory size");
+    if (ids.size() > profile::installed_item_limit) throw std::runtime_error("Invalid local cosmetic inventory size");
     // Same synchronous consumer as the native default-owned subscription
     // callback. It copies IDs into native models,
     // sets ownership and updates the category collections used by CAS pages.
