@@ -82,15 +82,35 @@ int flip_state(lua_State* L) {
     if (state->underflip_window.has_value()) field_bool(L, "underflip_window", *state->underflip_window);
     return 1;
 }
+// animation_values(): the values the rider's animation graph lists. animation_values(names): the ones named, wherever
+// the game keeps them (a list of 1 to 64 full names): a value the graph does not list has no `output`.
 int animation_values(lua_State* L) {
     auto& p = permitted(L, "skater.read", "reskate.skater.animation_values");
-    const auto values = game_of(p).animation_values();
+    std::vector<Game::AnimationValue> values;
+    if (lua_isnoneornil(L, 1)) {
+        values = game_of(p).animation_values();
+    } else {
+        luaL_checktype(L, 1, LUA_TTABLE);
+        const auto count = lua_objlen(L, 1);
+        if (count < 1 || count > 64) luaL_argerror(L, 1, "a list of 1 to 64 names");
+        std::vector<std::string> names;
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, 1, i);
+            std::size_t length{};
+            const auto* text = lua_type(L, -1) == LUA_TSTRING ? lua_tolstring(L, -1, &length) : nullptr;
+            if (!text || !length || length > 120 || std::string_view(text, length).find('\0') != std::string_view::npos)
+                luaL_argerror(L, 1, "each name is a string of 1 to 120 characters");
+            names.emplace_back(text, length);
+            lua_pop(L, 1);
+        }
+        values = game_of(p).animation_values(names, p.level());
+    }
     lua_createtable(L, 0, static_cast<int>(values.size()));
     for (const auto& value : values) {
         lua_createtable(L, 0, 2);
         if (value.boolean) lua_pushboolean(L, value.value != 0); else lua_pushnumber(L, value.value);
         lua_setfield(L, -2, "value");
-        field_bool(L, "output", value.output);
+        if (value.listed) field_bool(L, "output", value.output);
         lua_setfield(L, -2, value.name.c_str());
     }
     return 1;

@@ -87,6 +87,7 @@
 #include "Extension/UI/Overlay/scripted_pad.h"
 #include "Engine/Game/Input/pad_output.h"
 #include "Engine/Game/Skater/animation_values.h"
+#include "Extension/Skater/animation_states.h"
 #include "Extension/Skater/grind_target.h"
 #include "Engine/Game/Input/gameplay_options.h"
 #include "Extension/World/character_room.h"
@@ -1416,6 +1417,23 @@ public:
         if (!no_bail_skater(skater)) return result;
         for (const auto& [name, value] : dingosdk::animation_values::read(skater.base, skater.core))
             result.push_back({name, value.number, value.boolean, value.output});
+        return result;
+    }
+    std::vector<AnimationValue> animation_values(const std::vector<std::string>& names, std::string_view level) override {
+        NoBailSkater skater;
+        std::vector<AnimationValue> result;
+        if (!no_bail_skater(skater)) return result;
+        const auto listed = dingosdk::animation_values::read(skater.base, skater.core);
+        bool missing = false;
+        for (const auto& name : names) {
+            if (const auto at = listed.find(name); at != listed.end())
+                result.push_back({name, at->second.number, at->second.boolean, at->second.output, true});
+            else if (const auto value = animation_states::read(skater.base, skater.core, name))
+                result.push_back({name, value->number, value->boolean, false, false});
+            else if (!animation_states::known(name))
+                missing = true;
+        }
+        animation_states::wanted(skater.base, level, missing, GetTickCount64());
         return result;
     }
     std::string set_animation_value(std::string_view name, double value) override {

@@ -157,6 +157,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/outfit_overlay.cpp
     Extension/Skater/layer_materials.cpp
     Extension/Skater/board_pose.cpp
+    Extension/Skater/animation_states.cpp
     Extension/Skater/skater_physics.cpp
     Extension/Skater/xray.cpp
     Extension/Skater/xray_render.cpp

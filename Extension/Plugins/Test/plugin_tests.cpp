@@ -1205,6 +1205,20 @@ struct FakeGame final : Game {
     std::optional<FlipState> flip_state() override { ++flip_state_reads; return flip_state_result; }
     std::optional<SkaterFrame> skater_frame() override { return SkaterFrame{{1, 2, 3}, {0, 0, 1}, false, true, false, false, 42}; }
     std::vector<AnimationValue> animation_values() override { return {{"Animation/Dingo/Bool.Anim.DoingTrick", 1, true, false}, {"Animation/Dingo/Float.Physics.Example", 0.5, false, true}}; }
+    // By name: the two the graph lists, and two it does not (the player pumping, the manual asked for).
+    std::vector<std::string> animation_names_asked;
+    std::string animation_names_level;
+    std::vector<AnimationValue> animation_values(const std::vector<std::string>& names, std::string_view level) override {
+        animation_names_asked = names;
+        animation_names_level = level;
+        std::vector<AnimationValue> out;
+        for (const auto& name : names) {
+            if (name == "Animation/Dingo/Bool.Anim.DoingTrick") out.push_back({name, 1, true, false, true});
+            else if (name == "Animation/Dingo/Bool.Intent.Pumping") out.push_back({name, 1, true, false, false});
+            else if (name == "Animation/Dingo/Enum.Intent.Manual") out.push_back({name, 2, false, false, false});
+        }
+        return out;
+    }
     std::string set_animation_value(std::string_view name, double) override { return name == "Animation/Dingo/Float.Physics.Example" ? "" : "not a live numeric physics output"; }
     int read_controller = -1;
     std::optional<PadInput> written_pad; unsigned written_controller{};
@@ -6813,6 +6827,74 @@ void animation_values_require_occupied_typed_local_pages() {
     put(page, 4, 0.5f); put(node, layout::type, std::uintptr_t{});
     check(av::read(base, address(core)).empty(), "wrong descriptor types are refused");
 }
+// The values the rider's graph does not list: their descriptors are found in a block of memory by their type, kept by
+// name, and read like a listed one once the game has bound them.
+void animation_values_are_found_in_memory_by_their_descriptors() {
+    namespace av = dingosdk::animation_values;
+    namespace layout = av::layout;
+    alignas(8) std::array<std::uint8_t, 0x700> core{};
+    alignas(8) std::array<std::uint8_t, 0x100> model{};
+    alignas(8) std::array<std::uint8_t, 0x740> page{};
+    alignas(8) std::array<std::uint8_t, 0x1000> block{}; // a piece of the game's memory: three descriptors and a look-alike
+    const auto address = [](const auto& v) { return reinterpret_cast<std::uintptr_t>(v.data()); };
+    const auto put = [](auto& bytes, std::size_t offset, auto value) { std::memcpy(bytes.data() + offset, &value, sizeof(value)); };
+    const std::uintptr_t base = 0x140000000;
+    const auto descriptor = [&](std::size_t at, std::uintptr_t type, std::uintptr_t secondary, std::size_t name_at, const std::string& name,
+                                std::uint32_t key) {
+        put(block, at + layout::type, base + type);
+        if (secondary) put(block, at + layout::secondary_type, base + secondary);
+        put(block, at + layout::key, key);
+        std::memcpy(block.data() + at + name_at, name.c_str(), name.size() + 1);
+    };
+    const std::string manual = "Animation/Dingo/Enum.Intent.Manual", phase = "Animation/Dingo/Float.Anim.TrickPhase",
+                      grinding = "Animation/Dingo/Bool.State.Is.GrindInto";
+    descriptor(0x100, layout::enum_type, layout::enum_secondary, layout::bool_name, manual, 0x04008001);  // page 1, place 8
+    descriptor(0x300, layout::float_type, 0, layout::float_name, phase, 0x0400c001);                      // page 1, place 12
+    descriptor(0x500, layout::bool_type, layout::bool_secondary, layout::bool_name, grinding, 0);         // not bound yet
+    descriptor(0x700, layout::bool_type, layout::bool_secondary, layout::bool_name, "Sound/Dingo/Bool.NotOurs", 0x01010001);
+    put(block, 0x900, base + layout::bool_type); // the type's word with nothing of a descriptor round it
+    put(core, layout::model, address(model));
+    put(model, layout::pages + sizeof(std::uintptr_t), address(page));
+    put(page, 8, std::int32_t{2});
+    put(page, 12, 0.25f);
+
+    av::Found found;
+    found.add_block(base, address(block), block.size());
+    check(found.descriptors.size() == 3 && found.knows(manual) && found.knows(phase) && found.knows(grinding),
+          "the three descriptors are found by their type and kept by name; what only looks like one is not");
+    check(!found.read(base, address(core), manual), "a value the rider's page does not hold is not read");
+    put(page, layout::occupied, std::uint32_t{(1u << 8) | (1u << 12)});
+    const auto intent = found.read(base, address(core), manual);
+    const auto turned = found.read(base, address(core), phase);
+    check(intent && intent->number == 2 && !intent->boolean && !intent->real, "a choice is read from the rider's page");
+    check(turned && turned->number == 0.25 && turned->real, "a number is read from the rider's page");
+    check(!found.read(base, address(core), grinding), "a descriptor the game has not bound has no value");
+    put(block, 0x500 + layout::key, std::uint32_t{0x01010001}); // the game binds it: page 1, place 16
+    put(page, 16, std::uint8_t{1});
+    put(page, layout::occupied, std::uint32_t{(1u << 8) | (1u << 12) | (1u << 16)});
+    const auto into = found.read(base, address(core), grinding);
+    check(into && into->boolean && into->number == 1, "once bound it reads, without another search");
+    // The memory is used again for something else (its level went): no value from it.
+    put(block, 0x100 + layout::type, std::uintptr_t{});
+    check(!found.read(base, address(core), manual), "a descriptor that is no longer one is not read");
+    // A second descriptor of the same name, the bound one: the first that reads is the value.
+    descriptor(0xb00, layout::enum_type, layout::enum_secondary, layout::bool_name, manual, 0x04008001);
+    found.add_block(base, address(block), block.size());
+    check(found.read(base, address(core), manual).has_value(), "another descriptor of the name is read in its place");
+    // A key naming a page the rider cannot have.
+    put(block, 0xb00 + layout::key, std::uint32_t{0x04008fff});
+    check(!found.read(base, address(core), manual), "a key past the rider's pages is refused");
+
+    // When a search runs: three seconds into a level, fifteen seconds apart, four a level, and anew on the next level.
+    av::SearchRule rule;
+    check(rule.new_level("levels/a", 1000) && !rule.new_level("levels/a", 1500), "a new level is seen once");
+    check(!rule.due(true, false, 2000), "not before the level is in");
+    check(!rule.due(false, false, 5000), "not while nothing asked for is missing");
+    check(!rule.due(true, true, 5000), "not while a search runs");
+    check(rule.due(true, false, 5000) && !rule.due(true, false, 6000) && rule.due(true, false, 20000), "fifteen seconds apart");
+    check(rule.due(true, false, 40000) && rule.due(true, false, 60000) && !rule.due(true, false, 90000), "four searches a level");
+    check(rule.new_level("levels/b", 100000) && !rule.due(true, false, 102000) && rule.due(true, false, 103000), "and again on the next level");
+}
 #endif
 
 void plugins_read_flip_state() {
@@ -6884,6 +6966,22 @@ void plugins_read_frames_and_hold_gameplay_options() {
         local a = reskate.skater.animation_values()
         assert(a["Animation/Dingo/Bool.Anim.DoingTrick"].value == true)
         assert(a["Animation/Dingo/Float.Physics.Example"].output)
+        -- By name: a pump meter reads whether the player pumps, a value the rider's graph does not list.
+        local named = reskate.skater.animation_values({"Animation/Dingo/Bool.Intent.Pumping", "Animation/Dingo/Enum.Intent.Manual",
+            "Animation/Dingo/Bool.Anim.DoingTrick", "Animation/Dingo/Bool.NoSuchValue"})
+        assert(named["Animation/Dingo/Bool.Intent.Pumping"].value == true)
+        assert(named["Animation/Dingo/Bool.Intent.Pumping"].output == nil, "whether an unlisted value is an output is not known")
+        assert(named["Animation/Dingo/Enum.Intent.Manual"].value == 2)
+        assert(named["Animation/Dingo/Bool.Anim.DoingTrick"].output == false)
+        assert(named["Animation/Dingo/Bool.NoSuchValue"] == nil, "a name the game does not have is left out")
+        assert(not pcall(reskate.skater.animation_values, "Animation/Dingo/Bool.Intent.Pumping"))
+        assert(not pcall(reskate.skater.animation_values, {}))
+        assert(not pcall(reskate.skater.animation_values, {1}))
+        assert(not pcall(reskate.skater.animation_values, {""}))
+        assert(not pcall(reskate.skater.animation_values, {string.rep("a", 121)}))
+        local many = {}
+        for i = 1, 65 do many[i] = "Animation/Dingo/Bool.Value" .. i end
+        assert(not pcall(reskate.skater.animation_values, many))
         assert(reskate.skater.set_animation_value("Animation/Dingo/Float.Physics.Example", 1.6))
         assert(not reskate.skater.set_animation_value("unknown", 1))
         assert(not pcall(reskate.skater.set_animation_value, "example", 0/0))
@@ -6895,6 +6993,8 @@ void plugins_read_frames_and_hold_gameplay_options() {
     )", R"("settings.read", "settings.write", "skater.read", "skater.animation", "skater.control", "input")")});
     running(host, "observations", environment);
     check(environment.fake.read_controller == 2, "physical pad selection reaches the game");
+    check(environment.fake.animation_names_asked.size() == 4 && environment.fake.animation_names_asked[1] == "Animation/Dingo/Enum.Intent.Manual",
+          "the names asked for reach the game");
     host.apply({script("denied", R"(
         assert(not pcall(reskate.settings.gameplay, "example"))
         assert(not pcall(reskate.settings.hold_gameplay, "example", false))
@@ -6902,6 +7002,7 @@ void plugins_read_frames_and_hold_gameplay_options() {
         assert(not pcall(reskate.skater.select_rail_target, 2))
         assert(not pcall(reskate.skater.frame))
         assert(not pcall(reskate.skater.animation_values))
+        assert(not pcall(reskate.skater.animation_values, {"Animation/Dingo/Bool.Intent.Pumping"}))
         assert(not pcall(reskate.skater.set_animation_value, "example", 1))
     )")});
     running(host, "denied", environment);
@@ -9896,6 +9997,7 @@ int main() {
         run(plugins_read_frames_and_hold_gameplay_options);
 #ifdef _WIN32
         run(animation_values_require_occupied_typed_local_pages);
+        run(animation_values_are_found_in_memory_by_their_descriptors);
 #endif
         run(plugins_reach_cruise_and_read_the_mouse);
         run(plugins_set_the_flip_speed);

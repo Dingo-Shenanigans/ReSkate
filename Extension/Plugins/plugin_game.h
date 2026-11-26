@@ -1320,8 +1320,12 @@ public:
         std::optional<bool> underflip_anim, underflip_state, underflip_window;
     };
     virtual std::optional<FlipState> flip_state() { return std::nullopt; }
-    struct AnimationValue { std::string name; double value{}; bool boolean{}, output{}; };
+    // `listed`: among the values the rider's animation graph lists, so whether it is an output is known.
+    struct AnimationValue { std::string name; double value{}; bool boolean{}, output{}, listed{true}; };
     virtual std::vector<AnimationValue> animation_values() { return {}; }
+    // The ones named, wherever the game keeps them: a name the graph does not list is looked for among every value
+    // the game has (on `level`: what is found is a level's own). One the rider does not hold is left out.
+    virtual std::vector<AnimationValue> animation_values(const std::vector<std::string>& /*names*/, std::string_view /*level*/) { return {}; }
     virtual std::string set_animation_value(std::string_view, double) { return unavailable; }
     virtual std::optional<bool> gameplay_option(std::string_view) { return std::nullopt; }
     virtual std::string hold_gameplay_option(std::string_view, std::string_view, std::optional<bool>) { return unavailable; }

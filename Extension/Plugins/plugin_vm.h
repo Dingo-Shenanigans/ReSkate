@@ -324,6 +324,7 @@ public:
     State state() const noexcept { return state_; }
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
+    std::string level() const { return services_.level(); } // the level being played, or empty
     void collect_when_nearly_full();
     double tick_ms() const noexcept { return last_window_ms_; }
     // Its limits from now on (the player's own choice of how strict: Host::set_limits).
