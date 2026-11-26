@@ -1,4 +1,9 @@
 #include "plugin_game_runtime.h"
+#include "Extension/Input/native_input_source.h"
+#include "Extension/Input/native_input_capture.h"
+#include "Extension/Input/pad_output_publication.h"
+#include "Extension/Input/native_menu_observation.h"
+#include "Engine/Game/Input/plugin_input_policy.h"
 #include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
@@ -197,6 +202,17 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    bool input_lease_request(std::uint64_t owner, std::uint32_t user, input_lease::Handle& h, input_lease::Reason& why) noexcept override { return native_input_source::lease_request(owner, user, h, why); }
+    bool input_lease_read(std::uint64_t owner, input_lease::Handle h, input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_read(owner, h, s, why); }
+    bool input_lease_renew(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_renew(owner, h, s, why); }
+    bool input_lease_release(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_release(owner, h, why); }
+    bool input_lease_state(std::uint64_t owner, input_lease::Handle h, input_lease::Receipt& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_state(owner, h, s, why); }
+    bool input_lease_acknowledge(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_acknowledge(owner, h, why); }
+    void input_lease_release_all(std::uint64_t owner) noexcept override { native_input_source::lease_release_all(owner); }
+    bool input_lease_capture_request(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, input_lease_capture::Reason& why) noexcept override { return native_input_source::capture_request(owner, h, s, why); }
+    bool input_lease_capture_state(std::uint64_t owner, input_lease::Handle h, input_lease_capture::Receipt& r) noexcept override { return native_input_source::capture_state(owner, h, r); }
+    bool input_lease_capture_release(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_release(owner, h); }
+    bool input_lease_capture_acknowledge(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_acknowledge(owner, h); }
     std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
         return ui_values::publish(base_, plugin, values);
     }
@@ -1278,7 +1294,8 @@ public:
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
-        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click, h.buttons});
+        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click,
+            static_cast<std::uint16_t>(h.buttons & ~input::menu_button)});
         return {};
     }
     std::optional<Vec3> board_spin() override { return skater_events::board_spin(); }
@@ -1473,13 +1490,13 @@ public:
         return PadInput{pad.left_x, pad.left_y, pad.right_x, pad.right_y, pad.left_trigger, pad.right_trigger, pad.buttons, pad.playstation};
     }
     std::string write_pad(std::string_view plugin, unsigned controller, std::optional<PadInput> pad) override {
-        if (!pad) return input::pad_outputs().write(plugin, controller, std::nullopt, GetTickCount64());
+        if (!pad) return native_input_source::write_pad_output(plugin, controller, std::nullopt, GetTickCount64());
         if (!input_allowed()) return "the game does not have gameplay input";
         const auto axis = [](float v) { return static_cast<std::int16_t>(std::round(v * (v < 0 ? 32768.0f : 32767.0f))); };
         const input::PadOutput out{static_cast<std::uint16_t>(pad->buttons),
             static_cast<std::uint8_t>(std::round(pad->left_trigger * 255)), static_cast<std::uint8_t>(std::round(pad->right_trigger * 255)),
             axis(pad->left_x), axis(pad->left_y), axis(pad->right_x), axis(pad->right_y)};
-        return input::pad_outputs().write(plugin, controller, out, GetTickCount64());
+        return native_input_source::write_pad_output(plugin, controller, out, GetTickCount64());
     }
     std::optional<StickInput> joystick(int device) override {
         if (!joystick::game_in_foreground()) return std::nullopt;
@@ -1505,7 +1522,8 @@ public:
         return {};
     }
     bool capturing() const noexcept {
-        return !capturer_.empty() && camera_mine(capturer_) && GetTickCount64() < capture_until_;
+        return !native_menu_observation::known_open(GetTickCount64()) && !capturer_.empty() &&
+            camera_mine(capturer_) && GetTickCount64() < capture_until_;
     }
     // ---- skater.animation ---------------------------------------------------------------------------
     // The game's own clips, read in the background from the first ask.
@@ -2157,7 +2175,8 @@ public:
         DWORD process{};
         const auto window = GetForegroundWindow();
         const bool focused = window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
-        return focused && !overlay::interface_open() && multiplayer::native_throwdown_gameplay_input_allowed();
+        return focused && !native_menu_observation::known_open(GetTickCount64()) &&
+            !overlay::interface_open() && multiplayer::native_throwdown_gameplay_input_allowed();
     }
     std::string free_camera(std::string_view plugin, bool on) override {
         if (on) free_camera_owner_ = plugin;
@@ -2394,7 +2413,7 @@ public:
         return done > 32 ? std::string{} : std::string("the folder could not be opened");
     }
     void release(std::string_view plugin) override {
-        input::pad_outputs().release(plugin);
+        native_input_source::release_pad_output(plugin);
         grind_target::release(plugin);
         input::gameplay_options().release(plugin);
         placement_physics::release(plugin);
