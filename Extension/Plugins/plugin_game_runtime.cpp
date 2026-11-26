@@ -393,6 +393,11 @@ public:
         const auto p = probe_local_surface_counted(from, to);
         return {{p.available, p.hit, p.position, p.fraction}, p.native_casts};
     }
+    CountedProbe world_trace_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        if (!allowed) return {};
+        const auto p = probe_local_surface_counted(from, to, {false, true});
+        return {{p.available, p.hit, p.position, p.fraction, p.normal, p.normal_available}, p.native_casts};
+    }
     std::optional<MapArea> map_area() override {
         const auto area = overlay::game_map_area();
         if (!area) return std::nullopt;

@@ -776,10 +776,10 @@ struct WorldApi {
     // surface normal or velocity is supplied. Each call is one of the tick's raycasts, like
     // world.raycast and world.pick, and its native casts also count against the VM's native cast
     // budget, which only world.probe and world.physics.probe_batch spend.
-    static int world_probe(lua_State* L) {
+    static int world_query(lua_State* L, bool contact) {
         auto& plugin = plugin_of(L);
-        need(L, plugin, "world.raycast", "reskate.world.probe");
-        if (lua_gettop(L) != 2) luaL_error(L, "world.probe takes only the ray's start and end");
+        need(L, plugin, "world.raycast", contact ? "reskate.world.trace" : "reskate.world.probe");
+        if (lua_gettop(L) != 2) luaL_error(L, "world.%s takes only the ray's start and end", contact ? "trace" : "probe");
         const auto from = position_of(L, 1, "the ray's start");
         const auto to = position_of(L, 2, "the ray's end");
         const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
@@ -791,7 +791,8 @@ struct WorldApi {
         // The counted native ray refuses segments below this squared length. Do not call it for
         // one, or label a nonexistent direction clear; the request still counts as a raycast.
         const auto allowed = std::min(plugin.native_casts_.remaining(), body_query::casts_per_ray);
-        const auto counted = distance_squared < 1e-10f || !allowed ? Game::CountedProbe{} : game_of(plugin).world_probe_bounded(from, to, allowed);
+        const auto counted = distance_squared < 1e-10f || !allowed ? Game::CountedProbe{} :
+            contact ? game_of(plugin).world_trace_bounded(from, to, allowed) : game_of(plugin).world_probe_bounded(from, to, allowed);
         const bool accounted = plugin.native_casts_.consume(counted.native_casts, allowed);
         const auto& probe = counted.probe;
         const bool ran = accounted && counted.native_casts && probe.available;
@@ -807,9 +808,22 @@ struct WorldApi {
             lua_setfield(L, -2, "position");
             lua_pushnumber(L, probe.fraction);
             lua_setfield(L, -2, "fraction");
+            if (contact) {
+                const auto& n = probe.normal;
+                const float size = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+                const bool normal = probe.normal_available && std::isfinite(size) && std::abs(size - 1.0f) < 0.001f;
+                lua_pushboolean(L, normal);
+                lua_setfield(L, -2, "normal_available");
+                if (normal) {
+                    push_position(L, n);
+                    lua_setfield(L, -2, "normal");
+                }
+            }
         }
         return 1;
     }
+    static int world_probe(lua_State* L) { return world_query(L, false); }
+    static int world_trace(lua_State* L) { return world_query(L, true); }
     // world.pick(from, to): where the ray meets the world, and the object it meets: {position,
     // object = {blueprint?, position, heading, transform = {matrix}}?}, or nil when it is clear.
     // world.map(): what the game's own map of the loaded level covers, {centre, size} in metres (its
@@ -4108,7 +4122,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                   {"ready", entities_ready}, {"blueprints", entities_blueprints},
                                   {"bounds", entities_bounds}});
     add_functions(L, "world", {{"set_time", set_time}, {"time", time_now}, {"set_control", set_control}, {"set_park", set_park}, {"controls", controls},
-                               {"controls_text", controls_text}, {"set_atmosphere", set_atmosphere}, {"pick", world_pick}, {"probe", world_probe}, {"map", world_map},
+                               {"controls_text", controls_text}, {"set_atmosphere", set_atmosphere}, {"pick", world_pick}, {"probe", world_probe}, {"trace", world_trace}, {"map", world_map},
                                {"shader", world_shader_set}, {"shader_data", world_shader_data}, {"shader_anchor", world_shader_anchor},
                                {"shader_cost", world_shader_cost}, {"shader_clock", world_shader_clock}});
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});

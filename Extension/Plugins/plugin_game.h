@@ -417,12 +417,17 @@ public:
         bool available{}, hit{};
         Vec3 position{};
         float fraction{};
+        Vec3 normal{};
+        bool normal_available{};
     };
     // At most `allowed` native casts (what is left of the VM's native cast budget, never more than
     // body_query::casts_per_ray), all of them counted, failed ones included; the game's ray makes
     // one. An unavailable backend reports zero casts. world.raycast and world.pick do not use it.
     struct CountedProbe { WorldProbe probe{}; unsigned native_casts{}; };
     virtual CountedProbe world_probe_bounded(const Vec3&, const Vec3&, unsigned) { return {}; }
+    // A current-world ray with a measured contact normal, when the native contact reader is
+    // available. No body, owner, motion or world epoch is exposed; the cast uses the camera filter.
+    virtual CountedProbe world_trace_bounded(const Vec3&, const Vec3&, unsigned) { return {}; }
     // The world raycast and the object it meets (Extension/Objects/ParkEditor/park_editor_runtime.h,
     // local_world_pick): where; and the object's transform (rows right, up, forward with their
     // scale, then position) and blueprint, when known.
