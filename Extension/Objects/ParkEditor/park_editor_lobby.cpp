@@ -49,7 +49,7 @@ void set_lobby_object_guest(bool guest) {
     r.late_restores.clear();
     r.inflight.reset();
     r.rows.clear();
-    r.teleport_token = 0;
+    { auto queue = r.teleport_queue.mutate(); queue.write().teleport_token = 0; }
     r.restore_failed = false;
     r.clearing = false;
     r.clear_entities.clear();
