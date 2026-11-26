@@ -23,7 +23,7 @@ using Microsoft::WRL::ComPtr;
 
 constexpr std::uintmax_t most_file_bytes = 64ull * 1024 * 1024, most_picture_bytes = 64ull * 1024 * 1024;
 constexpr UINT most_picture_side = 2048; // larger pictures are scaled down to this as they are read
-constexpr float near_plane = 0.01f, far_plane = 50.0f;
+constexpr float near_plane = 0.01f, far_plane = 5000.0f;
 // The frame's constants (viewmodel.hlsl's cbuffer frame): nine float4s, then the bones' rows.
 constexpr std::size_t frame_header_floats = 9 * 4, frame_floats = frame_header_floats + max_bones * 12;
 constexpr std::size_t constants_stride = (frame_floats * 4 + 255) / 256 * 256; // root CBVs are 256-byte aligned
@@ -167,6 +167,7 @@ void read_in_background(std::filesystem::path file, std::uint64_t serial) {
     }
     if (ok) {
         loaded->pictures.resize(loaded->model.materials.size() * 3);
+        std::size_t picture_bytes_held = 0;
         for (std::size_t m = 0; ok && m < loaded->model.materials.size(); ++m) {
             const auto& material = loaded->model.materials[m];
             const std::array<const std::string*, 3> names{&material.albedo, &material.normal, &material.surface};
@@ -188,8 +189,14 @@ void read_in_background(std::filesystem::path file, std::uint64_t serial) {
                     ok = false;
                     break;
                 }
-                picture.srgb = k == 0;
+                picture.srgb = k == 0 || (material.faces & 64);
                 make_levels(picture);
+                picture_bytes_held += picture.rgba.size();
+                if (picture_bytes_held > (512ull << 20)) {
+                    why = "the model's decoded pictures exceed 512 MiB";
+                    ok = false;
+                    break;
+                }
             }
         }
     }
@@ -215,7 +222,7 @@ struct Retired {
 };
 struct Gpu {
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12PipelineState> pipeline;
+    std::array<ComPtr<ID3D12PipelineState>, 6> pipelines;
     DXGI_FORMAT pipeline_format{DXGI_FORMAT_UNKNOWN};
     std::shared_ptr<const Loaded> model; // what the geometry and textures below are of
     ComPtr<ID3D12Resource> vertices, indices;
@@ -298,10 +305,10 @@ bool build_root(ID3D12Device* device) {
     D3D12_DESCRIPTOR_RANGE range{};
     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     range.NumDescriptors = 3;
-    std::array<D3D12_ROOT_PARAMETER, 3> parameters{};
+    std::array<D3D12_ROOT_PARAMETER, 4> parameters{};
     parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     parameters[0].Constants.ShaderRegister = 0;
-    parameters[0].Constants.Num32BitValues = 4;
+    parameters[0].Constants.Num32BitValues = 16;
     parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     parameters[1].Descriptor.ShaderRegister = 1;
@@ -310,6 +317,10 @@ bool build_root(ID3D12Device* device) {
     parameters[2].DescriptorTable.NumDescriptorRanges = 1;
     parameters[2].DescriptorTable.pDescriptorRanges = &range;
     parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    parameters[3].Constants.ShaderRegister = 2;
+    parameters[3].Constants.Num32BitValues = 12;
+    parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
     D3D12_STATIC_SAMPLER_DESC sampler{};
     sampler.Filter = D3D12_FILTER_ANISOTROPIC;
     sampler.MaxAnisotropy = 8;
@@ -338,8 +349,8 @@ bool build_root(ID3D12Device* device) {
 
 bool build_pipeline(ID3D12Device* device, DXGI_FORMAT format) {
     auto& g = gpu();
-    if (g.pipeline && g.pipeline_format == format) return true;
-    g.pipeline.Reset();
+    if (g.pipelines.back() && g.pipeline_format == format) return true;
+    for (auto& pipeline : g.pipelines) pipeline.Reset();
     if (!build_root(device)) return false;
     ComPtr<ID3DBlob> vertex, pixel, error;
     const auto length = std::strlen(viewmodel_hlsl);
@@ -356,12 +367,15 @@ bool build_pipeline(ID3D12Device* device, DXGI_FORMAT format) {
                    (error ? std::string(": ") + static_cast<const char*>(error->GetBufferPointer()) : std::string(".")));
         return false;
     }
-    const std::array<D3D12_INPUT_ELEMENT_DESC, 6> layout{{
+    const std::array<D3D12_INPUT_ELEMENT_DESC, 9> layout{{
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, normal), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vertex, tangent), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, uv), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, offsetof(Vertex, joints), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, offsetof(Vertex, colour), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, uv1), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, uv2), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"BLENDWEIGHT", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, offsetof(Vertex, weights), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     }};
     D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
@@ -372,21 +386,30 @@ bool build_pipeline(ID3D12Device* device, DXGI_FORMAT format) {
     description.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
     description.SampleMask = UINT_MAX;
     description.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // Both sides: the exporter's change of axes is a reflection, and a model's thin parts are seen from
-    // either side; the depth buffer keeps the nearest.
-    description.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     description.RasterizerState.DepthClipEnable = TRUE;
     description.DepthStencilState.DepthEnable = TRUE;
-    description.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    description.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    description.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER;
     description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     description.NumRenderTargets = 1;
     description.RTVFormats[0] = format;
     description.SampleDesc.Count = 1;
-    if (FAILED(device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&g.pipeline)))) {
-        say_failed("its pipeline was refused for this swapchain format.");
-        return false;
+    for (unsigned i = 0; i < g.pipelines.size(); ++i) {
+        const bool transparent = i >= 3;
+        description.RasterizerState.CullMode = i % 3 == 0 ? D3D12_CULL_MODE_NONE : i % 3 == 1 ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_FRONT;
+        description.DepthStencilState.DepthWriteMask = transparent ? D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL;
+        auto& blend = description.BlendState.RenderTarget[0];
+        blend.BlendEnable = transparent;
+        blend.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.BlendOp = D3D12_BLEND_OP_ADD;
+        blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+        blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        if (FAILED(device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&g.pipelines[i])))) {
+            say_failed("its pipeline was refused for this swapchain format.");
+            return false;
+        }
     }
     g.pipeline_format = format;
     return true;
@@ -419,7 +442,7 @@ bool ensure_depth(const Target& t, UINT64 width, UINT height) {
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_CLEAR_VALUE clear{};
     clear.Format = DXGI_FORMAT_D32_FLOAT;
-    clear.DepthStencil.Depth = 1.0f;
+    clear.DepthStencil.Depth = 0.0f;
     if (FAILED(t.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
                                                  IID_PPV_ARGS(&g.depth)))) {
         say_failed("its depth buffer could not be made.");
@@ -553,7 +576,7 @@ void make_views(const Target& t) {
         D3D12_SHADER_RESOURCE_VIEW_DESC view{};
         view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        view.Format = i % 3 == 0 ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+        view.Format = g.model->pictures[i].srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
         view.Texture2D.MipLevels = g.textures[i] ? g.textures[i]->GetDesc().MipLevels : 1;
         t.device->CreateShaderResourceView(g.textures[i].Get(), &view, cpu);
     }
@@ -635,6 +658,12 @@ std::string play(std::string_view clip, const Animator::Play& play) {
     auto asked = play;
     asked.clip = index;
     s.animator.play(s.loaded->model, asked, steady_seconds());
+    return {};
+}
+std::string seek(double seconds) {
+    auto& s = shared();
+    std::lock_guard lock(s.mutex);
+    if (!s.loaded || !s.animator.seek(seconds, steady_seconds())) return "no clip is playing";
     return {};
 }
 void stop() noexcept {
@@ -726,11 +755,12 @@ bool record(const Target& t) noexcept {
         const float aspect = static_cast<float>(desc.Width) / static_cast<float>(desc.Height);
         const float fov = std::clamp(look.fov, 20.0f, 120.0f) * std::numbers::pi_v<float> / 180.0f;
         const float focal = 1.0f / std::tan(fov * 0.5f);
-        const float depth_scale = far_plane / (far_plane - near_plane);
+        // Reversed depth keeps distant scenery precise with a floating-point depth buffer.
+        const float depth_scale = -near_plane / (far_plane - near_plane);
         const auto place = placement(look.offset, look.yaw, look.pitch, look.roll);
         const auto light = unit(look.light, {-0.35f, 0.75f, -0.55f});
         const std::array<float, frame_header_floats> header{
-            focal / aspect, focal, depth_scale, -near_plane * depth_scale,
+            focal / aspect, focal, depth_scale, -far_plane * depth_scale,
             place[0], place[1], place[2], place[3], place[4], place[5], place[6], place[7], place[8], place[9], place[10], place[11],
             light[0], light[1], light[2], 0,
             look.light_colour[0], look.light_colour[1], look.light_colour[2], std::clamp(look.ambient, 0.0f, 4.0f),
@@ -746,29 +776,59 @@ bool record(const Target& t) noexcept {
         transition(t.commands, t.buffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
         const auto depth = g.depth_view->GetCPUDescriptorHandleForHeapStart();
         t.commands->OMSetRenderTargets(1, &t.rtv, FALSE, &depth);
-        t.commands->ClearDepthStencilView(depth, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        t.commands->ClearDepthStencilView(depth, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr);
         const D3D12_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(desc.Width), static_cast<float>(desc.Height), 0.0f, 1.0f};
         const D3D12_RECT scissor{0, 0, static_cast<LONG>(desc.Width), static_cast<LONG>(desc.Height)};
         t.commands->RSSetViewports(1, &viewport);
         t.commands->RSSetScissorRects(1, &scissor);
         t.commands->SetGraphicsRootSignature(g.root.Get());
-        t.commands->SetPipelineState(g.pipeline.Get());
+
         t.commands->SetGraphicsRootConstantBufferView(1, g.constants->GetGPUVirtualAddress() + ring * constants_stride);
         t.commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         t.commands->IASetVertexBuffers(0, 1, &g.vertex_view);
         t.commands->IASetIndexBuffer(&g.index_view);
         const auto step = t.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        for (const auto& part : model.parts) {
+        std::vector<std::pair<double, const Part*>> glass;
+        const auto draw = [&](const Part& part) {
             const auto& material = model.materials[part.material];
             const std::size_t first = std::size_t{part.material} * 3;
-            const unsigned has = (g.textures[first] ? 1u : 0u) | (g.textures[first + 1] ? 2u : 0u) | (g.textures[first + 2] ? 4u : 0u);
-            const std::array<float, 4> constants{material.roughness, material.specular, static_cast<float>(has), 0};
-            t.commands->SetGraphicsRoot32BitConstants(0, 4, constants.data(), 0);
+            const unsigned textures = (g.textures[first] ? 1u : 0u) | (g.textures[first+1] ? 2u : 0u) | (g.textures[first+2] ? 4u : 0u);
+            const unsigned flags = textures | ((material.faces & 0x70u) << 1) | ((material.faces & 128u) ? 512u : 0u) |
+                ((material.faces & 3u) ? 0u : 256u) | (model.version >= 2 ? 1024u : 0u);
+            t.commands->SetPipelineState(g.pipelines[(material.faces & 3) + (material.opacity < 1 ? 3 : 0)].Get());
+            t.commands->SetGraphicsRoot32BitConstants(3, 12, part.transform.data(), 0);
+            t.commands->SetGraphicsRoot32BitConstants(0, 12, material.layers.data(), 0);
+            const std::array<float, 4> constants{material.roughness, material.specular, static_cast<float>(flags), material.opacity};
+            t.commands->SetGraphicsRoot32BitConstants(0, 4, constants.data(), 12);
             auto table = t.srvs->GetGPUDescriptorHandleForHeapStart();
             table.ptr += static_cast<UINT64>(step) * (t.slot + first);
             t.commands->SetGraphicsRootDescriptorTable(2, table);
             t.commands->DrawIndexedInstanced(part.count, 1, part.first, 0, 0);
+        };
+        for (const auto& part : model.parts) {
+            const float opacity = model.materials[part.material].opacity;
+            if (opacity >= 1) draw(part);
+            else if (opacity > 0 && part.count) {
+                // Sample across the part so a peripheral or zero-weight first joint cannot set its sort order.
+                const unsigned samples = std::min(8u, part.count);
+                double depth_sum = 0;
+                for (unsigned sample = 0; sample < samples; ++sample) {
+                    const auto index = part.first + sample * part.count / samples;
+                    const auto& vertex = model.vertices[model.indices[index]];
+                    for (unsigned joint = 0; joint < 4; ++joint) {
+                        if (!vertex.weights[joint]) continue;
+                        const auto matrix = multiply(place, multiply(skin[vertex.joints[joint]], part.transform));
+                        const auto& point = vertex.position;
+                        const double z = matrix[8] * point[0] + matrix[9] * point[1] + matrix[10] * point[2] + matrix[11];
+                        depth_sum += z * vertex.weights[joint] / 255.0;
+                    }
+                }
+                const auto depth_key = std::isfinite(depth_sum) ? depth_sum / samples : 0.0;
+                glass.emplace_back(depth_key, &part);
+            }
         }
+        std::stable_sort(glass.begin(), glass.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (const auto& entry : glass) draw(*entry.second);
         transition(t.commands, t.buffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
         return true;
     } catch (...) {
@@ -781,7 +841,7 @@ void release() noexcept {
     auto& g = gpu();
     // The overlay waits for the GPU before it tears down, so nothing here is still in use.
     g.retired.clear();
-    g.pipeline.Reset();
+    for (auto& pipeline : g.pipelines) pipeline.Reset();
     g.pipeline_format = DXGI_FORMAT_UNKNOWN;
     g.root.Reset();
     g.model.reset();

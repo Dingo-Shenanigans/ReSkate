@@ -63,8 +63,9 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
         why = "it is not a viewmodel (.rsvm) file";
         return std::nullopt;
     }
-    if (const auto version = r.value<std::uint32_t>(); version != 1) {
-        why = "it is a viewmodel of version " + std::to_string(version) + ", and this ReSkate reads version 1";
+    const auto version = r.value<std::uint32_t>();
+    if (version < 1 || version > 4) {
+        why = "it is a viewmodel of version " + std::to_string(version) + ", and this ReSkate reads versions 1 to 4";
         return std::nullopt;
     }
     const auto bones = r.value<std::uint32_t>(), materials = r.value<std::uint32_t>(), parts = r.value<std::uint32_t>();
@@ -75,12 +76,13 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
     };
     if (r.bad) return bad("it ends in its header");
     if (bones == 0 || bones > max_bones) return bad("a viewmodel has 1 to " + std::to_string(max_bones) + " bones, and this has " + std::to_string(bones));
-    if (materials == 0 || materials > 8) return bad("a viewmodel has 1 to 8 materials");
-    if (parts == 0 || parts > 64) return bad("a viewmodel has 1 to 64 parts");
+    if (materials == 0 || materials > max_materials) return bad("a viewmodel has 1 to 256 materials");
+    if (parts == 0 || parts > 4096) return bad("a viewmodel has 1 to 4096 parts");
     if (vertices == 0 || vertices > 1'000'000) return bad("a viewmodel has 1 to 1000000 vertices");
     if (indices == 0 || indices % 3 != 0 || indices > 3'000'000) return bad("a viewmodel's indices are whole triangles, at most 1000000");
     if (clips > 64) return bad("a viewmodel has at most 64 clips");
     Model model;
+    model.version = version;
     model.bones.resize(bones);
     for (auto& bone : model.bones) {
         bone.name = r.text();
@@ -97,6 +99,21 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
         material.surface = r.text();
         material.roughness = std::clamp(r.value<float>(), 0.0f, 1.0f);
         material.specular = std::clamp(r.value<float>(), 0.0f, 1.0f);
+        if (version >= 2) {
+            material.opacity = r.value<float>();
+            material.faces = r.value<std::uint8_t>();
+            if (!(material.opacity >= 0 && material.opacity <= 1) || (material.faces & 3) == 3 ||
+                (version < 4 && material.faces > 63)) return bad("invalid material opacity or face flags");
+        }
+        if (version >= 4) {
+            for (auto& layer : material.layers) {
+                r.take(layer.data(), sizeof layer);
+                if (!finite(layer.data(), 4) || layer[0] < 0 || layer[0] > 65535 || layer[1] < 0 || layer[1] > 255 ||
+                    layer[2] < 0 || layer[2] > 1 || layer[3] < 0 || layer[3] > 16777215 ||
+                    std::floor(layer[0]) != layer[0] || std::floor(layer[1]) != layer[1] || std::floor(layer[3]) != layer[3])
+                    return bad("invalid material layer");
+            }
+        }
         if (!std::isfinite(material.roughness) || !std::isfinite(material.specular)) return bad("material \"" + material.name + "\" is not a number somewhere");
     }
     model.parts.resize(parts);
@@ -104,14 +121,23 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
         part.material = r.value<std::uint32_t>();
         part.first = r.value<std::uint32_t>();
         part.count = r.value<std::uint32_t>();
+        if (version >= 3) {
+            part.name = r.text();
+            r.take(part.transform.data(), sizeof part.transform);
+            if (!finite(part.transform.data(), 12)) return bad("invalid part transform");
+        }
         if (part.material >= materials) return bad("a part's material is not one of its materials");
         if (part.first > indices || part.count > indices - part.first || part.count % 3 != 0)
             return bad("a part's triangles are not among its indices");
     }
-    if (!r.fits(vertices, sizeof(Vertex))) return bad("it ends in its vertices");
+    const std::size_t stride = version == 4 ? 76 : version == 3 ? 60 : 56;
+    if (!r.fits(vertices, stride)) return bad("it ends in its vertices");
     model.vertices.resize(vertices);
-    r.take(model.vertices.data(), std::size_t{vertices} * sizeof(Vertex));
-    for (const auto& v : model.vertices) {
+    for (auto& v : model.vertices) {
+        r.take(&v, stride);
+        if (!finite(v.uv1, 2) || !finite(v.uv2, 2)) return bad("invalid texture coordinates");
+        for (int i = 0; i < 4; ++i)
+            if (!v.weights[i]) v.joints[i] = 0;
         if (!finite(v.position, 12)) return bad("a vertex is not a number somewhere");
         for (int i = 0; i < 4; ++i)
             if (v.weights[i] && v.joints[i] >= bones) return bad("a vertex is weighted to a bone the model does not have");
@@ -202,8 +228,16 @@ void Animator::play(const Model& model, const Play& play, double now) {
     current_.play.fade = std::clamp(play.fade, 0.0, 2.0);
 }
 
+bool Animator::seek(double seconds, double now) noexcept {
+    if (current_.play.clip < 0 || !std::isfinite(seconds) || seconds < 0) return false;
+    current_.offset = seconds;
+    current_.started = now;
+    previous_ = {}; // An explicit pose must not depend on elapsed crossfade time.
+    return true;
+}
+
 double Animator::time_of(const Model& model, const Running& running, double now) noexcept {
-    const double time = std::max(0.0, (now - running.started) * running.play.speed);
+    const double time = running.offset + std::max(0.0, (now - running.started) * running.play.speed);
     const double length = model.clips[static_cast<std::size_t>(running.play.clip)].duration();
     if (running.play.loop) return length > 0 ? std::fmod(time, length) : 0.0;
     return std::min(time, length);
@@ -213,7 +247,7 @@ Animator::State Animator::state(const Model& model, double now) const noexcept {
     if (current_.play.clip < 0) return {};
     const double length = model.clips[static_cast<std::size_t>(current_.play.clip)].duration();
     const double time = time_of(model, current_, now);
-    const bool done = !current_.play.loop && (now - current_.started) * current_.play.speed >= length;
+    const bool done = !current_.play.loop && time >= length;
     return {current_.play.clip, time, done};
 }
 

@@ -856,6 +856,11 @@ struct FakeGame final : Game {
                           : std::format("viewmodel hide {}", plugin));
         return {};
     }
+    std::string viewmodel_seek(std::string_view plugin, double time) override {
+        if (viewmodeler != plugin) return "no viewmodel";
+        calls.push_back(std::format("seek {} {}", plugin, time));
+        return {};
+    }
     std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade) override {
         if (viewmodeler != plugin) return "this plugin has no viewmodel loaded";
         if (clip != "FPS_Pistol_Fire" && clip != "FPS_Pistol_Idle") return "the viewmodel has no clip \"" + std::string(clip) + "\"";
@@ -6624,6 +6629,8 @@ void plugins_show_a_viewmodel() {
         assert(not pcall(reskate.viewmodel.show, {sky = 2}), "colours are vectors")
         assert(reskate.viewmodel.play("FPS_Pistol_Fire", {speed = 1.5, fade = 0.05}))
         assert(reskate.viewmodel.play("FPS_Pistol_Idle", {loop = true}))
+        assert(reskate.viewmodel.seek(0.125))
+        assert(not pcall(reskate.viewmodel.seek, -1))
         local ok, why = reskate.viewmodel.play("Dance")
         assert(not ok and why:find("no clip"), "a clip it does not have")
         assert(not pcall(reskate.viewmodel.play, "FPS_Pistol_Fire", {speed = 20}), "speed 0 to 10")
@@ -6639,7 +6646,7 @@ void plugins_show_a_viewmodel() {
     host.apply({package("shooter", {{manifest_file, manifest(R"("viewmodel")")}, {"plugin/main.lua", main}, {"gun/pistol.rsvm", "RSVM"}})});
     ticks(host, environment, 1);
     running(host, "shooter", environment);
-    check(environment.logged("[shooter] armed"), "A viewmodel's calls work\n" + environment.all());
+    check(environment.logged("[shooter] armed") && game.called("seek shooter 0.125"), "A viewmodel's calls work\n" + environment.all());
     check(game.called("viewmodel load shooter pistol.rsvm") && game.called("viewmodel show shooter 0.02 -0.01 0.03 0 4 -2 55 0.8 1.2") &&
               game.called("viewmodel play shooter FPS_Pistol_Fire false 1.5 0.05") && game.called("viewmodel play shooter FPS_Pistol_Idle true 1.0 0.10") &&
               game.called("viewmodel stop shooter") && game.called("viewmodel hide shooter"),
@@ -6656,10 +6663,10 @@ void plugins_show_a_viewmodel() {
     host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
         reskate.log(tostring(pcall(reskate.viewmodel.load, "gun.rsvm")) .. " " .. tostring(pcall(reskate.viewmodel.show, {})) .. " " ..
             tostring(pcall(reskate.viewmodel.play, "FPS_Pistol_Fire")) .. " " .. tostring(pcall(reskate.viewmodel.bone, "Rif_end")) .. " " ..
-            tostring(pcall(reskate.viewmodel.info)))
+            tostring(pcall(reskate.viewmodel.info)) .. " " .. tostring(pcall(reskate.viewmodel.seek, 0)))
     )"}, {"gun.rsvm", "RSVM"}})});
     ticks(host, environment, 1);
-    check(environment.logged("[sneaky] false false false false false"), "viewmodel is needed\n" + environment.all());
+    check(environment.logged("[sneaky] false false false false false false"), "viewmodel is needed\n" + environment.all());
     check(game.viewmodeler.empty(), "Given up when its plugin stops\n" + environment.all());
 }
 

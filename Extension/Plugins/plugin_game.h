@@ -1360,6 +1360,7 @@ public:
         float ambient{0.6f}, brightness{1};
     };
     virtual std::string viewmodel_show(std::string_view /*plugin*/, std::optional<ViewmodelLook>) { return unavailable; }
+    virtual std::string viewmodel_seek(std::string_view, double) { return "no viewmodel"; }
     virtual std::string viewmodel_play(std::string_view /*plugin*/, std::string_view /*clip*/, bool /*loop*/, float /*speed*/, float /*fade*/) {
         return unavailable;
     }
