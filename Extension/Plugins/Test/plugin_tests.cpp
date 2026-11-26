@@ -675,6 +675,9 @@ struct FakeGame final : Game {
                         (h.buttons ? std::format(" buttons {:04x}", h.buttons) : std::string{}));
         return {};
     }
+    void game_buttons(std::string_view plugin, std::uint16_t hidden, std::uint16_t held, bool paused) override {
+        calls.push_back(std::format("game_buttons {} {:04x} {:04x} {}", plugin, hidden, held, paused));
+    }
     std::string cruise(std::string_view plugin, float speed, bool may_slow) override {
         calls.push_back(std::format("cruise {} {:.1f} {}", plugin, speed, may_slow));
         return {};
@@ -7204,6 +7207,9 @@ void plugins_reach_cruise_and_read_the_mouse() {
         -- Buttons kept from the game by name; Start never is.
         assert(reskate.input.hide({buttons = {"y", "b"}}))
         assert(not pcall(reskate.input.hide, {buttons = {"start"}}), "Start always reaches the game")
+        -- Raw button masks are accepted here; the native gate must remove Start from both masks.
+        reskate.input.game_buttons(0xffff, 0xffff, false)
+        reskate.input.game_buttons(0, 0, false)
         assert(not pcall(reskate.input.hide, {buttons = "y"}), "buttons is a list")
         assert(reskate.input.hide({right_stick = true, right_stick_click = true}))
         -- Keys kept from the game: the mouse's buttons are keys too, Escape never is.
@@ -7243,6 +7249,8 @@ void plugins_reach_cruise_and_read_the_mouse() {
     check(game.called("velocity filmer 1.0 5.0 -2.0") && game.called("velocity filmer 0.0 3.0 0.0 add"), "A velocity set, and one added");
     check(game.called("hide filmer false false false stick true false true"), "The right stick and its click kept from the game");
     check(game.called("hide filmer false false false buttons a000"), "Y and B kept from the game");
+    check(game.called("game_buttons filmer ffff ffff false") && game.called("game_buttons filmer 0000 0000 false"),
+          "A plugin can request raw Start masks, which the native input gate must remove");
     check(game.called("look filmer 0.80 110 0.35 truetruetruefalsefalsetruefalsefalsefalsefalsetrue 2.0 [#REC|0:00:02||4:05 PM|OCT.20 2026]") &&
               game.called("slap filmer") && game.called("look filmer none"),
           "A camcorder look on the screen, its text in capitals, a slap, and off\n" + environment.all());
