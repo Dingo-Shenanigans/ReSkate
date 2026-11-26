@@ -971,6 +971,8 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_values_api(plugin, L);
     install_files_api(plugin, L);
     install_picture_api(plugin, L);
+    install_replay_api(plugin, L);
+    install_videos_api(plugin, L);
     readonly();
     lua_setglobal(L, "reskate");
     lua_pushcfunction(L, ApiFunctions::print, "print");

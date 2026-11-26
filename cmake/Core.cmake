@@ -172,6 +172,8 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_viewmodel.cpp
     Extension/Plugins/plugin_api_files.cpp
     Extension/Plugins/plugin_api_picture.cpp
+    Extension/Plugins/plugin_api_replay.cpp
+    Extension/Plugins/plugin_api_videos.cpp
     Extension/Plugins/plugin_zip_file.cpp
     Extension/Plugins/plugin_effects.cpp
     # The throwdown kit's store and the plugins' modes, which the plugin host and the game's

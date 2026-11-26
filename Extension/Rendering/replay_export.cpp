@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <climits>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <string>
@@ -30,13 +31,41 @@ using Submit = void (*)(std::uintptr_t encoder, std::uintptr_t pixels, std::uint
 std::atomic<Submit> original{};
 std::atomic<std::uintptr_t> image{};
 
+// The export as it runs (running() in replay_export.h): its frames counted as the encoder takes them, on the encoder's
+// thread. A pause of a few seconds between frames is the next export; it is timed from the end of the last frame's encode,
+// so a slow encode (4K) is still the same export.
+constexpr std::uint64_t new_export_ms = 3000, running_ms = 2000;
+std::atomic<std::uint64_t> export_session{}, export_frames{}, last_frame_ms{};
+std::atomic<std::uint64_t> export_began_ms{}, previous_export_ended_ms{};
+// The MP4 setup's size and frame rate (a WebM export has none), and when it last ran.
+std::atomic<int> setup_width{}, setup_height{};
+std::atomic<float> setup_fps{};
+std::atomic<std::uint64_t> setup_ms{};
+
+void count_frame() noexcept {
+    const auto now = GetTickCount64();
+    const auto last = last_frame_ms.load(std::memory_order_relaxed);
+    if (now - last > new_export_ms) {
+        previous_export_ended_ms.store(last, std::memory_order_relaxed);
+        export_began_ms.store(now, std::memory_order_relaxed);
+        export_frames.store(0, std::memory_order_relaxed);
+        export_session.fetch_add(1, std::memory_order_relaxed);
+    }
+    export_frames.fetch_add(1, std::memory_order_relaxed);
+    last_frame_ms.store(now, std::memory_order_release);
+}
+
 void submit(std::uintptr_t encoder, std::uintptr_t pixels, std::uintptr_t pitch, std::uintptr_t unused) {
     // Encoding is done on this thread before the call returns, so letting every
     // frame through also holds the renderer to the pace the encoder keeps.
     std::uintptr_t vtable{};
-    if (memory::peek(encoder, vtable) && vtable == image.load() + native::replay_encoder_vtable)
+    const bool replay = memory::peek(encoder, vtable) && vtable == image.load() + native::replay_encoder_vtable;
+    if (replay) {
         *reinterpret_cast<std::uint8_t*>(encoder + native::frame_permit) = 1;
+        count_frame();
+    }
     original.load()(encoder, pixels, pitch, unused);
+    if (replay) last_frame_ms.store(GetTickCount64(), std::memory_order_release);
 }
 
 // The export's quality: the H.264 setup reads the encoder's bitrate as it builds the output type, so
@@ -72,7 +101,18 @@ void apply_quality(std::uintptr_t encoder) noexcept {
 }
 
 std::uintptr_t configure(std::uintptr_t encoder, std::uintptr_t a, std::uintptr_t b, std::uintptr_t c) {
-    if (encoder) apply_quality(encoder);
+    if (encoder) {
+        apply_quality(encoder);
+        int width{}, height{};
+        float fps{};
+        if (memory::peek(encoder + native::h264_width, width) && memory::peek(encoder + native::h264_height, height) &&
+            memory::peek(encoder + native::h264_fps, fps) && width > 0 && height > 0 && width <= 16384 && height <= 16384) {
+            setup_width.store(width, std::memory_order_relaxed);
+            setup_height.store(height, std::memory_order_relaxed);
+            setup_fps.store(std::isfinite(fps) && fps > 0 && fps <= 1000 ? fps : 0.0f, std::memory_order_relaxed);
+            setup_ms.store(GetTickCount64(), std::memory_order_release);
+        }
+    }
     return original_configure.load()(encoder, a, b, c);
 }
 
@@ -174,5 +214,25 @@ bool start(std::uintptr_t base) noexcept {
     } catch (...) {
         return false;
     }
+}
+
+Running running() noexcept {
+    Running r;
+    const auto last = last_frame_ms.load(std::memory_order_acquire);
+    const auto now = GetTickCount64();
+    r.running = last && now - last <= running_ms;
+    r.session = export_session.load(std::memory_order_relaxed);
+    r.frames = export_frames.load(std::memory_order_relaxed);
+    r.began_ms = export_began_ms.load(std::memory_order_relaxed);
+    // The MP4 setup counts for this export when it ran after the export before it ended, and at most ten seconds before
+    // this one's first frame (one called off before its first frame is not this one's); a WebM export has none.
+    const auto at = setup_ms.load(std::memory_order_acquire);
+    const auto began = export_began_ms.load(std::memory_order_relaxed), before = previous_export_ended_ms.load(std::memory_order_relaxed);
+    if (r.running && at && began && at > before && !(began > at && began - at > 10000)) {
+        r.width = setup_width.load(std::memory_order_relaxed);
+        r.height = setup_height.load(std::memory_order_relaxed);
+        r.fps = setup_fps.load(std::memory_order_relaxed);
+    }
+    return r;
 }
 } // namespace dingosdk::replay_export

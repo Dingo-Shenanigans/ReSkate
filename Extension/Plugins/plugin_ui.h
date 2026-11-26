@@ -45,11 +45,17 @@ inline constexpr std::array<std::string_view, 24> body_names{
     "Lower back", "Spine", "Left toes", "Left foot", "Left shin", "Left thigh",
     "Right toes", "Right foot", "Right shin", "Right thigh", "Pelvis"};
 // The game's own pictures a plugin draws by name (game_image; Extension/UI/Overlay/game_images.h).
-inline constexpr std::array<std::string_view, 31> game_images{
+inline constexpr std::array<std::string_view, 93> game_images{
     "stopwatch", "wipeout", "wipeout_broken", "spread_eagle", "airtime", "gap_height", "flaming_wheel", "roll",
     "thrasher", "brush_bar", "rough_tile", "scratches", "streak", "loading_board",
     // The customization menu's category icons (its tabs'), white on clear.
-    "cas_tops", "cas_bottoms", "cas_shoes", "cas_outfit", "cas_fullbody", "cas_headwear", "cas_headaccessories", "cas_eyewear", "cas_handwear", "cas_socks", "cas_deck", "cas_trucks", "cas_wheels", "cas_gripcolor", "cas_grippattern", "cas_sticker", "cas_decorator_vfxcosmetic"};
+    "cas_tops", "cas_bottoms", "cas_shoes", "cas_outfit", "cas_fullbody", "cas_headwear", "cas_headaccessories", "cas_eyewear", "cas_handwear", "cas_socks", "cas_deck", "cas_trucks", "cas_wheels", "cas_gripcolor", "cas_grippattern", "cas_sticker", "cas_decorator_vfxcosmetic",
+    // The game's button prompts in their own colours (Xbox, PlayStation, keyboard and mouse: "key" is a blank key, drawn
+    // wide as a panel), the "+" between buttons held together, and icons of its replay editor and menus (white).
+    "xbox_a", "xbox_b", "xbox_x", "xbox_y", "xbox_lb", "xbox_rb", "xbox_lt", "xbox_rt", "xbox_l3", "xbox_r3", "xbox_view", "xbox_menu", "xbox_dpad", "xbox_dpad_up", "xbox_dpad_down", "xbox_dpad_left", "xbox_dpad_right", "xbox_dpad_vertical", "xbox_dpad_horizontal", "ps_cross", "ps_circle", "ps_square", "ps_triangle", "ps_l1", "ps_r1", "ps_l2", "ps_r2", "ps_l3", "ps_r3", "ps4_touchpad", "ps4_options", "ps5_touchpad", "ps5_options", "ps_dpad", "ps_dpad_up", "ps_dpad_down", "ps_dpad_left", "ps_dpad_right", "ps_dpad_vertical", "ps_dpad_horizontal", "key", "key_enter", "key_esc", "key_tab", "key_space", "key_up", "key_down", "key_left", "key_right", "mouse_left", "mouse_wheel", "prompt_and", "replay_camera", "replay_zoom", "condition_frame", "replay_effects", "show", "spotlight", "gamepad", "settings", "replay_save", "warning"};
+// The faces the game's own UI writes in, which plugins name as style.font (Extension/UI/Overlay/game_faces.h): its
+// labels', its values' and headings', and its screens' marker-pen titles'.
+inline constexpr std::array<std::string_view, 3> game_faces{"game_label", "game_value", "game_title"};
 // The loading board is a flipbook: this many frames, at 30 a second (style.frame).
 inline constexpr int loading_board_frames = 27;
 // Screen shapes are in pixels from the top left; world shapes in world metres, projected through

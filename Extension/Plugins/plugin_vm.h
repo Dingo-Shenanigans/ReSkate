@@ -341,6 +341,9 @@ public:
     const plugin_ui::detail::FontMetrics* font_metrics(int number);
     // Where the fonts are on disk, for what draws its shapes (plugin_ui::Layer::fonts); none without any.
     const std::shared_ptr<const std::vector<std::string>>& font_files() const noexcept { return font_files_; }
+    // One of the game's own faces (plugin_ui::game_faces) as a font number of the plugin's: after its own fonts, its
+    // layers' font files then naming the faces' files too.
+    int game_font_number(std::size_t face);
     // Over a limit or stopped: the API refuses every call until the VM is closed.
     bool halted() const noexcept { return halt_ != Halt::none || memory_exceeded_; }
 
@@ -463,8 +466,10 @@ private:
     struct OwnFont {
         bool asked{};
         std::shared_ptr<const plugin_ui::detail::FontMetrics> metrics;
+        std::chrono::steady_clock::time_point again{}; // a game's face not read yet is asked for again from then
     };
-    std::vector<OwnFont> fonts_;
+    std::vector<OwnFont> fonts_; // then the game's faces, once one is named (game_font_number)
+    bool game_faces_{};
     std::shared_ptr<const std::vector<std::string>> font_files_;
     // skater.animation: clips by their path in the package, or "rec:<n>" for a recording, and the
     // bytes they hold (at most limits_.clip_bytes).
@@ -485,6 +490,8 @@ private:
         screen_shader::Kind kind{};
     };
     std::map<std::string, CachedShader, std::less<>> shader_files_;
+    // reskate.world.shader_image: the picture files read, by path (a few kept, as the shaders' are).
+    std::map<std::string, std::shared_ptr<const std::string>, std::less<>> shader_images_;
     std::size_t wave_bytes_{};
     std::uint64_t wave_plays_{};
     // reskate.animation.preload and reskate.audio.preload: a package file read and decoded on a

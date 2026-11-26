@@ -83,6 +83,88 @@ inline constexpr Texture brush_bar{bam_toc, bam_bundle, "ui/textures/common/bann
 inline constexpr Texture streak{root_toc, root_bundle, "ui/textures/common/brushs/img_brush_splashstreak_1024_1024_152",
     {}, {8.0f / 1024, 30.0f / 152, 1014.0f / 1024, 116.0f / 152}};
 
+// The game's button prompts, as its own prompts draw them (Xbox, PlayStation, keyboard and mouse; in their own colours
+// on clear), the "+" it sets between buttons held together, and icons of its replay editor and menus, in the order of
+// plugin_ui.h's game_images from "xbox_a" on. Each is drawn from its visible part: the prompts fill only the middle of
+// their squares. (The game's Xbox "menu" is the View button, two windows; its "options" the Menu button.) The keyboard's
+// key is blank, for a key's name written on it: nine-sliced, a wide key keeps its ends square. Found with a scan of
+// every bundle's resources on 2026-11-19.
+inline constexpr std::string_view prompt_toc = scoring_toc;
+inline constexpr std::string_view prompt_bundle = scoring_bundle;
+inline constexpr std::string_view core_bundle = "win32/levels/game/bam_levelroot/bam_coregameassets";
+inline constexpr std::array<Texture, 62> prompts{{
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_a_108_108_108"}, // xbox_a
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_b_108_108_108"}, // xbox_b
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_x_108_108_108"}, // xbox_x
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_y_108_108_108"}, // xbox_y
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_lbumper_108_108_108"}, // xbox_lb
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_rbumper_108_108_108"}, // xbox_rb
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_ltrigger_108_108_108"}, // xbox_lt
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_rtrigger_108_108_108"}, // xbox_rt
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_lstick-click_108_108_108"}, // xbox_l3
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_rstick-click_108_108_108"}, // xbox_r3
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_menu_108_108_108"}, // xbox_view
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_options_108_108_108"}, // xbox_menu
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_dpad-none_256_256_256"}, // xbox_dpad
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_dpad-up_108_108_108"}, // xbox_dpad_up
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_dpad-down_108_108_108"}, // xbox_dpad_down
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_dpad-left_108_108_108"}, // xbox_dpad_left
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_dpad-right_108_108_108"}, // xbox_dpad_right
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_dpad-vertical_108_108_108"}, // xbox_dpad_vertical
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/xbox/img_xbox_dpad-horizontal_108_108_108"}, // xbox_dpad_horizontal
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_cross_108_108_108"}, // ps_cross
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_circle_108_108_108"}, // ps_circle
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_square_108_108_108"}, // ps_square
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_triangle_108_108_108"}, // ps_triangle
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_lbumper_108_108_108"}, // ps_l1
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_rbumper_108_108_108"}, // ps_r1
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_ltrigger_108_108_108"}, // ps_l2
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_rtrigger_108_108_108"}, // ps_r2
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_lstick-click_108_108_108"}, // ps_l3
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_rstick-click_108_108_108"}, // ps_r3
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps4_touchpad_108_108_108"}, // ps4_touchpad
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps4_options_108_108_108"}, // ps4_options
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps5_touchpad_108_108_108"}, // ps5_touchpad
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps5_options_108_108_108"}, // ps5_options
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_dpad-none_256_256_256"}, // ps_dpad
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_dpad-up_108_108_108"}, // ps_dpad_up
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_dpad-down_108_108_108"}, // ps_dpad_down
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_dpad-left_108_108_108"}, // ps_dpad_left
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_dpad-right_108_108_108"}, // ps_dpad_right
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_dpad-vertical_108_108_108"}, // ps_dpad_vertical
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/ps/img_ps_dpad-horizontal_108_108_108"}, // ps_dpad_horizontal
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_bg_108_108_108", {}, {}, 0.5f}, // key
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_enter_108_108_108"}, // key_enter
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_esc_108_108_108"}, // key_esc
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_tab_108_108_108"}, // key_tab
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_space_108_108_108"}, // key_space
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_up_108_108_108"}, // key_up
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_down_108_108_108"}, // key_down
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_left_108_108_108"}, // key_left
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_keyboard_right_108_108_108"}, // key_right
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_mouse_lclick_108_108_108"}, // mouse_left
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/mnk/img_input_mouse_wheel_108_108_108"}, // mouse_wheel
+    {prompt_toc, prompt_bundle, "ui/textures/icons/inputs/img_input_combinatorial_and_108_64_108"}, // prompt_and
+    {bam_toc, core_bundle, "ui/textures/icons/toolbox/icon_replay_camera_128_128_128"}, // replay_camera
+    {bam_toc, core_bundle, "ui/textures/features/replay/img_replay_zoom_64_64_64"}, // replay_zoom
+    {bam_toc, bam_bundle, "ui/textures/common/shapes/bespoke/img_icon_condition_frame_alt_128_128_128"}, // condition_frame
+    {bam_toc, core_bundle, "ui/textures/icons/replay/img_replay_effects_128_128_128"}, // replay_effects
+    {bam_toc, bam_bundle, "ui/textures/icons/generic/img_icon_show_128_128_128"}, // show
+    {bam_toc, bam_bundle, "ui/textures/common/shapes/bespoke/img_icon_emptyspotlight_128_128_128"}, // spotlight
+    {bam_toc, core_bundle, "ui/textures/icons/img_icon_gamepad_192_96_96"}, // gamepad
+    {prompt_toc, prompt_bundle, "ui/textures/icons/generic/img_generic_settings_128_128_128"}, // settings
+    {bam_toc, core_bundle, "ui/textures/icons/replay/img_replay_save_128_128_128"}, // replay_save
+    {bam_toc, core_bundle, "ui/textures/icons/generic/img_generic_warning_128_64_64"}, // warning
+}};
+
+// The faces skate.'s UI writes in, TrueType files as they are (resources of type 0x063994c5) with its English font
+// configuration: Gilroy SemiBold (its labels), Gilroy ExtraBold (its values and headings) and SkaterMarker Bold (the
+// marker face of its screens' titles), in the order of plugin_ui.h's game_faces. Found on 2026-11-19.
+inline constexpr std::string_view face_toc = "Win32/ui.toc";
+inline constexpr std::string_view face_bundle = "win32/configurations/delmarrimefontconfiguration_languageformat_english";
+inline constexpr std::array<std::string_view, 3> faces{
+    "ui/styleguide/fonts/gilroy/gilroy-semibold", "ui/styleguide/fonts/gilroy/gilroy-extrabold", "ui/styleguide/fonts/skatermarker/skatemarker_bold"};
+
 // The picture on the loading screen of each of the game's own maps, by the map's name as a
 // server's vote for the next map gives it (world_level_name). Each is in its loading screen's
 // own widget bundle, in the globals superbundle, at two sizes: this is the smaller, 1280 by

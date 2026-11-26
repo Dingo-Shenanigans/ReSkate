@@ -27,6 +27,10 @@ inline constexpr std::size_t most_compiled_bytes = 1024u * 1024u; // a compiled 
 inline constexpr std::size_t most_parts = 64;
 // A world shader's data (reskate.world.shader_data; world_shader.h): whole float4s, at most this many bytes.
 inline constexpr std::size_t world_data_most_bytes = 64u * 1024u;
+// A world shader's pictures (reskate.world.shader_image; world_shader.h): how many, and each one's file and size at most.
+inline constexpr std::size_t world_image_count = 4;
+inline constexpr std::size_t world_image_most_bytes = 16u * 1024u * 1024u;
+inline constexpr unsigned world_image_most_side = 4096;
 
 // In front of a plugin's HLSL source. A compiled shader declares the same itself (the bindings are what count;
 // the names are the plugin's own).

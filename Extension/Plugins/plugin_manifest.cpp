@@ -59,9 +59,19 @@ namespace {
 // progression prefab.
 // "skater.copy" draws a copy of the local skater somewhere else (reskate.skater.copy;
 // Extension/Multiplayer/Session/skater_copy.h): this game's alone, never in a session, nothing sent.
-// "replay" grants nothing yet: no API checks it. It stays known so a manifest that lists it still
-// loads (an unknown permission refuses the whole manifest).
-constexpr std::array<std::string_view, 70> permissions{
+// "replay" reads the replay editor (reskate.replay; Extension/ReplayKeyframes/replay_editor.h): the moment the picture
+// shows on the replay's clock (an export's frame), its timeline and trim, the camera's keyframes and where the replay has
+// the skater; and it copies the camera's keyframes, which ReSkate keeps, to put back into sessions with none on a later
+// visit (put_keys: the game's own add). A plugin never holds the game's bytes of a key, only the copy's number.
+// "world.lights" makes lights of the plugin's own in the game's world (reskate.world.light; Extension/World/plugin_lights.h):
+// spot lights made through the game's own light renderer, for this game alone, at most 8; nothing else of the game's.
+// "screen.shape" puts the game's picture in a shape of the plugin's (reskate.screen.shape; Extension/Rendering/picture_shape.h):
+// its window sized to it in the middle of the monitor, black around it, and the game rendering that shape; all of it put
+// back when the plugin lets go or stops.
+// "videos" moves the videos the game exports from its replay editor into a folder the player picks for the plugin
+// with Windows' folder picker (reskate.videos; Extension/Rendering/export_videos.h): the plugin names them by their
+// files' names alone, never has a path, and reads or writes no file of the player's.
+constexpr std::array<std::string_view, 73> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.vehicles", "world.physics", "world.physics.observe", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
@@ -69,7 +79,7 @@ constexpr std::array<std::string_view, 70> permissions{
     "chat.send", "chat.local", "chat.commands", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
     "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings", "outfit.stand_ins",
     "objects.physics", "marker.read", "ui.models", "hud.score", "effects.game", "screen.shader", "world.shader", "world.sets", "skater.copy",
-    "files.folders"};
+    "files.folders", "world.lights", "screen.shape", "videos"};
 // "files.folders" reads and writes files in folders beside the game that the manifest's "folders" names
 // (reskate.files with "<folder>:<path>"): for files a player keeps, shares or brings from another tool,
 // where a data folder under Mods would hide them. Never one of the game's or ReSkate's own folders.

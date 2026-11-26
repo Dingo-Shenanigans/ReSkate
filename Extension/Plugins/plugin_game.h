@@ -805,11 +805,18 @@ public:
     // The size in pixels of a picture of the package or of the data folder; nothing for one a step
     // would not draw.
     virtual std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view /*plugin*/, const picture::File&) { return std::nullopt; }
+    // A picture file's pixels, decoded (picture::decode): nothing for a file that is not a PNG or JPEG it decodes.
+    virtual std::optional<picture::Pixels> picture_pixels(std::string_view /*plugin*/, const picture::File&) { return std::nullopt; }
     // ---- a plugin's own fonts (its manifest's "fonts"; style.font in a drawn text) -----------------------
     // The metrics of a font file of the plugin's package, for d:measure and d:glyph, as the overlay
     // draws a text in it: each character's advance, with no kerning (plugin_ui.h's FontMetrics, `own`).
     // `path` is the font's in the package and `file` where that is on disk. Nothing when the font
     // cannot be read: the plugin's texts in it are then set in "body". Asked once a font a load.
+    // The file one of the game's own faces is kept in (plugin_ui::game_faces; Extension/UI/Overlay/game_faces.h), whether
+    // it is there yet or not (its reading starts when one is first asked for); none when it has no place.
+    virtual std::filesystem::path game_face_file(std::size_t /*face*/) { return {}; }
+    // One of the game's own pictures' size in pixels as it is kept (plugin_ui::game_images), once it has been read.
+    virtual std::optional<std::array<int, 2>> game_image_size(std::string_view /*name*/) { return std::nullopt; }
     virtual std::shared_ptr<const plugin_ui::detail::FontMetrics> plugin_font_metrics(std::string_view /*plugin*/, std::string_view /*path*/,
                                                                                       const std::filesystem::path& /*file*/) {
         return nullptr;
@@ -855,6 +862,90 @@ public:
     virtual void release_camera(std::string_view /*plugin*/) {}
     // "" while the plugin's view is the one shown, otherwise why not.
     virtual std::string camera_status(std::string_view /*plugin*/) { return unavailable; }
+    // The picture's camera moved and turned from where the game puts it (Extension/Rendering/view_offset.h): `turn` in
+    // degrees (yaw right, pitch up, roll clockwise), `move` in metres (along its right, up and forward), the vertical field
+    // of view in degrees (0 its own) times `zoom`. Held 300 ms, so said every tick; none ends it. In play, in the replay
+    // editor and in the videos it exports. One plugin's at a time.
+    struct CameraOffset {
+        std::array<float, 3> turn{}, move{};
+        float fov{}, zoom{1.0f};
+    };
+    virtual std::string camera_offset(std::string_view /*plugin*/, std::optional<CameraOffset>) { return unavailable; }
+    // ---- the replay editor (reskate.replay; Extension/ReplayKeyframes/replay_editor.h says how each is read) ------------
+    struct ReplayChunk {
+        double clock_from{}, clock_to{}; // its footage on the replay's clock
+        float from{}, to{};              // the share of the whole replay it fills
+    };
+    struct ReplayState {
+        double time{};     // the moment the picture shows, on the replay's clock (an export's: the frame it films)
+        double playhead{}; // the editor's playhead on the clock
+        double from{}, to{}; // the replay's footage on its clock
+        bool timeline{};   // the editor's timeline was read: its bar's start on the clock and length (seconds), the
+                           // playhead's share of it, the trim and the part of the whole replay the bar shows (shares)
+        double start{}, length{};
+        float at{}, trim_from{}, trim_to{1}, shown_from{}, shown_to{1};
+        std::vector<ReplayChunk> chunks;
+        bool keys_playing{}, exporting{}, ui_hidden{};
+        std::uint64_t frame{}; // an export's frames encoded so far
+        float fps{};           // and its frame rate
+    };
+    // Nothing outside the replay editor.
+    virtual std::optional<ReplayState> replay_state() { return std::nullopt; }
+    struct ReplayKey {
+        int session{};
+        double time{};
+        int camera{}; // 0 orbit, 1 free
+        float fov{}, speed{};
+    };
+    virtual std::vector<ReplayKey> replay_keys() { return {}; }
+    // A copy of every camera keyframe, kept by ReSkate for the plugin (it gets only the copy's number; 0: none), and that
+    // copy put back (`put`: how many; else why none could be).
+    virtual std::uint64_t replay_copy_keys(std::string_view /*plugin*/) { return 0; }
+    virtual std::string replay_put_keys(std::string_view /*plugin*/, std::uint64_t /*copy*/, std::size_t& /*put*/) { return unavailable; }
+    struct ReplaySkater {
+        Vec3 body{}, upper{}, board{};
+    };
+    virtual std::optional<ReplaySkater> replay_skater() { return std::nullopt; }
+    // ---- lights (reskate.world.light; Extension/World/plugin_lights.h) ---------------------------------------------------
+    // A spot light of the plugin's own: rows right, up, back and position (it shines along -back), its brightness (lumens),
+    // reach (metres), beam and core (degrees across), colour, shadows. None takes it away.
+    struct WorldLight {
+        std::array<float, 16> transform{};
+        float lumens{12000}, range{10}, beam{70}, core{35};
+        std::array<float, 3> colour{1, 1, 1};
+        bool shadows{true};
+    };
+    virtual std::string world_light(std::string_view /*plugin*/, std::string_view /*name*/, std::optional<WorldLight>) { return unavailable; }
+    // ---- the picture's shape (reskate.screen.shape; Extension/Rendering/picture_shape.h) ----------------------------------
+    // Width over height, or none (the screen's own back). One plugin's at a time.
+    virtual std::string screen_shape(std::string_view /*plugin*/, std::optional<float> /*aspect*/) { return unavailable; }
+    // The graphics card's memory Windows gives the game now and what it uses, and what the PC can still commit: bytes.
+    struct GraphicsMemory {
+        std::uint64_t budget{}, used{}, commit_free{};
+    };
+    virtual std::optional<GraphicsMemory> graphics_memory() { return std::nullopt; }
+    // ---- exported videos (reskate.videos; Extension/Rendering/export_videos.h) ---------------------------------------------
+    // The game's exported videos, by their files' names: newest first.
+    struct ExportedVideo {
+        std::string name;
+        std::uint64_t bytes{};
+        double written{}; // seconds since 1970
+        bool ready{};     // the game has let it go
+    };
+    virtual std::vector<ExportedVideo> exported_videos() { return {}; }
+    // The folder the player picked for the plugin's videos ("" none); the picker opened over the game ("" or why not);
+    // the folder forgotten; File Explorer opened on it.
+    virtual std::string video_folder(std::string_view /*plugin*/) { return {}; }
+    virtual std::string pick_video_folder(std::string_view /*plugin*/, std::string_view /*title*/) { return unavailable; }
+    virtual void forget_video_folder(std::string_view /*plugin*/) {}
+    virtual std::string open_video_folder(std::string_view /*plugin*/) { return unavailable; }
+    // One of them moved into that folder on a thread of its own ("" started, or why not), and how the moves ended since
+    // the plugin last asked: `to` its name in the folder, else `why` it stays where the game put it.
+    virtual std::string move_video(std::string_view /*plugin*/, std::string_view /*name*/) { return unavailable; }
+    struct VideoMove {
+        std::string name, to, why;
+    };
+    virtual std::vector<VideoMove> video_moves(std::string_view /*plugin*/) { return {}; }
     // The plugin's camera as a step of the game's camera height button cycle (Engine/Game/Skater/
     // first_person_cycle.h): out of it, in it and off (ready to start), or in it and on. Held 300 ms,
     // so said every tick; one plugin at a time. The steps the button asks for come back from
@@ -1282,11 +1373,17 @@ public:
         screen_shader::Kind kind{};
         std::array<float, screen_shader::value_count> values{};
         bool heights{};
+        bool mips{};  // the picture's copy (t0) with its mips
+        bool shown{}; // and as the screen shows it, through the display mapping
+        bool export_frame{}; // in a replay export, drawn into the video's own frames (with shown)
+        bool depth{true};    // it reads the world's depth: drawn only on frames whose depth is found
     };
     virtual std::string world_shader(std::string_view /*plugin*/, std::optional<WorldShader>) { return unavailable; }
     // Its data (float4s, at most 64 KB; none: none), where its near distance is measured (for 300 ms), and its average
     // time a frame on the GPU (milliseconds), once known.
     virtual std::string world_shader_data(std::string_view /*plugin*/, std::shared_ptr<const std::string>) { return unavailable; }
+    // One of its pictures (slot 0 to 3, its shader's t4 to t7): a picture file's bytes and its name, or none to clear it.
+    virtual std::string world_shader_image(std::string_view /*plugin*/, int /*slot*/, std::string_view /*name*/, std::shared_ptr<const std::string>) { return unavailable; }
     virtual void world_shader_anchor(std::string_view /*plugin*/, std::optional<Vec3>) {}
     virtual std::optional<double> world_shader_cost(std::string_view /*plugin*/) { return std::nullopt; }
     // The world shader's clock (its reskate_clock.x): seconds, from 0 again every 1000.

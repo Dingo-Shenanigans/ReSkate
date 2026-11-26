@@ -3,7 +3,9 @@
 // icons, the THRASHER wordmark and the brush strokes and tiles of its menus, read from the installed
 // game's data (Engine/Game/Build/20260929/ui_textures.h) and placed in the overlay's font atlas like
 // the chat emotes. Nothing of the game's is shipped.
+#include <array>
 #include <chrono>
+#include <optional>
 #include <string_view>
 #include <imgui.h>
 
@@ -19,8 +21,12 @@ void fill_game_images(ImFontAtlas& atlas) noexcept;
 // corners `edge` pixels square.
 enum class GameImageFit { contain, shape, panel };
 // The pictures' names: stopwatch, wipeout, wipeout_broken, spread_eagle, airtime, gap_height,
-// flaming_wheel, roll, thrasher, brush_bar, rough_tile, scratches, streak, loading_board.
+// flaming_wheel, roll, thrasher, brush_bar, rough_tile, scratches, streak, loading_board, the
+// customization menu's icons and the button prompts and icons (plugin_ui.h game_images).
 // Render thread. False while the picture is not loaded (yet, or at all). `frame`: of a flipbook (the
 // loading board's 27, at 30 a second), the one drawn, fitted; the others have none.
 bool draw_game_image(ImDrawList* draw, std::string_view name, ImVec2 min, ImVec2 max, ImU32 tint, GameImageFit fit, float edge, int frame = 0);
+// A picture's size in pixels as it is kept (its width over its height is how it is fitted), once it has been read;
+// nothing before, or when it is not there. Any thread.
+std::optional<std::array<int, 2>> game_image_size(std::string_view name) noexcept;
 }

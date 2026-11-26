@@ -96,10 +96,40 @@ int Plugin::font_number(std::string_view path) const noexcept {
     return found == manifest_.fonts.end() ? 0 : plugin_ui::own_fonts + static_cast<int>(found - manifest_.fonts.begin());
 }
 
+int Plugin::game_font_number(std::size_t face) {
+    if (face >= plugin_ui::game_faces.size()) return 0;
+    if (!std::exchange(game_faces_, true)) {
+        std::vector<std::string> files = font_files_ ? *font_files_ : std::vector<std::string>{};
+        files.resize(manifest_.fonts.size());
+        for (std::size_t one = 0; one < plugin_ui::game_faces.size(); ++one) {
+            const Untimed untimed{*this};
+            const auto utf8 = services_.game().game_face_file(one).u8string();
+            files.emplace_back(utf8.begin(), utf8.end());
+        }
+        fonts_.resize(files.size());
+        font_files_ = std::make_shared<const std::vector<std::string>>(std::move(files));
+    }
+    return plugin_ui::own_fonts + static_cast<int>(manifest_.fonts.size() + face);
+}
+
 const plugin_ui::detail::FontMetrics* Plugin::font_metrics(int number) {
     const auto index = static_cast<std::size_t>(number - plugin_ui::own_fonts);
     if (number < plugin_ui::own_fonts || index >= fonts_.size()) return nullptr;
     auto& font = fonts_[index];
+    if (index >= manifest_.fonts.size()) {
+        // One of the game's faces: read from the game into its file as ReSkate starts, so asked for again (a second
+        // apart) until it is there.
+        const auto now = std::chrono::steady_clock::now();
+        if (!font.metrics && now >= font.again && font_files_ && index < font_files_->size()) {
+            font.again = now + std::chrono::seconds(1);
+            const Untimed untimed{*this};
+            const auto& file = (*font_files_)[index];
+            font.metrics = services_.game().plugin_font_metrics(id_, plugin_ui::game_faces[index - manifest_.fonts.size()],
+                                                               std::filesystem::path(std::u8string(file.begin(), file.end())));
+            if (font.metrics && !(font.metrics->size > 0)) font.metrics.reset();
+        }
+        return font.metrics.get();
+    }
     if (!font.asked) {
         font.asked = true;
         const Untimed untimed{*this}; // reading the font is ReSkate's work, not the plugin's time

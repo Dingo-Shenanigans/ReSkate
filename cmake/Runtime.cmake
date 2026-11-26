@@ -98,6 +98,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/shader_permutation_guard.cpp
     Extension/World/shader_registry_guard.cpp
     Extension/World/light_table_guard.cpp
+    Extension/World/plugin_lights.cpp
     Extension/World/stack_check_report.cpp
     Extension/World/texture_handle_limit.cpp
     Extension/World/texture_handle_guard.cpp
@@ -180,7 +181,12 @@ add_library(dingosdk_runtime SHARED
     Extension/World/spatial_cull_ids.cpp
     Extension/Rendering/display_startup.cpp
     Extension/Rendering/replay_export.cpp
+    Extension/Rendering/view_offset.cpp
+    Extension/Rendering/picture_shape.cpp
+    Extension/Rendering/export_videos.cpp
+    Extension/ReplayKeyframes/replay_clock.cpp
     Extension/ReplayKeyframes/replay_curve.cpp
+    Extension/ReplayKeyframes/replay_editor.cpp
     Extension/ReplayKeyframes/replay_keyframes.cpp
     Extension/ReplayKeyframes/replay_keyframes_commands.cpp
     Extension/ReplayKeyframes/replay_settings.cpp

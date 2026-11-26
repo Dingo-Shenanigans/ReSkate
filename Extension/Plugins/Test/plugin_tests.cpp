@@ -802,8 +802,14 @@ struct FakeGame final : Game {
             calls.push_back(std::format("world {} none", plugin));
             return {};
         }
-        calls.push_back(std::format("world {} {} {} {} {} {:.2f} {:.2f}", plugin, s->file, static_cast<int>(s->kind), s->bytes ? s->bytes->size() : 0,
-                                    s->heights, s->values[0], s->values[47]));
+        calls.push_back(std::format("world {} {} {} {} {} {:.2f} {:.2f}{}", plugin, s->file, static_cast<int>(s->kind), s->bytes ? s->bytes->size() : 0,
+                                    s->heights, s->values[0], s->values[47],
+                                    std::string(s->mips ? " mips" : "") + (s->shown ? " shown" : "") + (s->export_frame ? " frame" : "") +
+                                        (s->depth ? "" : " nodepth")));
+        return {};
+    }
+    std::string world_shader_image(std::string_view plugin, int slot, std::string_view name, std::shared_ptr<const std::string> bytes) override {
+        calls.push_back(bytes ? std::format("world image {} {} {} {}", plugin, slot, name, bytes->size()) : std::format("world image {} {} none", plugin, slot));
         return {};
     }
     std::string world_shader_data(std::string_view plugin, std::shared_ptr<const std::string> bytes) override {
@@ -1457,6 +1463,11 @@ struct FakeGame final : Game {
         }
         return metrics;
     }
+    // A picture's pixels: two, opaque red and clear, for any picture there is.
+    std::optional<picture::Pixels> picture_pixels(std::string_view plugin, const picture::File& file) override {
+        if (!picture_size(plugin, file)) return std::nullopt;
+        return picture::Pixels{2, 1, {255, 0, 0, 255, 0, 0, 0, 0}};
+    }
     std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view plugin, const picture::File& file) override {
         if (!file.data.empty()) {
             if (!files.contains(std::string(plugin) + "/" + file.data)) return std::nullopt;
@@ -1552,6 +1563,96 @@ struct FakeGame final : Game {
         return {};
     }
     void release_camera(std::string_view plugin) override { calls.push_back("camera release " + std::string(plugin)); }
+    std::string world_light(std::string_view plugin, std::string_view name, std::optional<WorldLight> light) override {
+        if (!light) {
+            calls.push_back(std::format("light {} {} none", plugin, name));
+            return {};
+        }
+        calls.push_back(std::format("light {} {} at {:.1f} {:.1f} {:.1f} back {:.2f} {:.2f} {:.2f} lumens {:.0f} range {:.1f} beam {:.0f} core {:.0f} colour {:.2f} {:.2f} {:.2f}{}",
+                                    plugin, name, light->transform[12], light->transform[13], light->transform[14], light->transform[8], light->transform[9],
+                                    light->transform[10], light->lumens, light->range, light->beam, light->core, light->colour[0], light->colour[1],
+                                    light->colour[2], light->shadows ? " shadows" : ""));
+        return {};
+    }
+    std::string screen_shape(std::string_view plugin, std::optional<float> aspect) override {
+        calls.push_back(aspect ? std::format("shape {} {:.4f}", plugin, *aspect) : std::format("shape {} none", plugin));
+        return {};
+    }
+    std::optional<GraphicsMemory> graphics_memory() override { return GraphicsMemory{12ull << 30, 5ull << 30, 20ull << 30}; }
+    std::vector<ExportedVideo> videos;
+    std::map<std::string, std::string, std::less<>> video_folders;
+    std::map<std::string, std::vector<VideoMove>, std::less<>> video_moves_made;
+    std::vector<ExportedVideo> exported_videos() override { return videos; }
+    std::string video_folder(std::string_view plugin) override {
+        const auto found = video_folders.find(plugin);
+        return found == video_folders.end() ? std::string() : found->second;
+    }
+    std::string pick_video_folder(std::string_view plugin, std::string_view title) override {
+        calls.push_back(std::format("pick {} {}", plugin, title));
+        video_folders[std::string(plugin)] = "D:\\Clips";
+        return {};
+    }
+    void forget_video_folder(std::string_view plugin) override {
+        calls.push_back(std::format("forget {}", plugin));
+        video_folders.erase(std::string(plugin));
+    }
+    std::string open_video_folder(std::string_view plugin) override {
+        calls.push_back(std::format("open {}", plugin));
+        return {};
+    }
+    std::string move_video(std::string_view plugin, std::string_view name) override {
+        if (video_folder(plugin).empty()) return "the player has picked no folder for its videos";
+        calls.push_back(std::format("move {} {}", plugin, name));
+        video_moves_made[std::string(plugin)].push_back({std::string(name), std::string(name), {}});
+        return {};
+    }
+    std::vector<VideoMove> video_moves(std::string_view plugin) override {
+        const auto found = video_moves_made.find(plugin);
+        if (found == video_moves_made.end()) return {};
+        auto moves = std::move(found->second);
+        video_moves_made.erase(found);
+        return moves;
+    }
+    std::filesystem::path face_folder;
+    std::filesystem::path game_face_file(std::size_t face) override {
+        if (face_folder.empty() || face >= plugin_ui::game_faces.size()) return {};
+        return face_folder / (std::string(plugin_ui::game_faces[face]) + ".ttf");
+    }
+    std::map<std::string, std::array<int, 2>, std::less<>> image_sizes;
+    std::optional<std::array<int, 2>> game_image_size(std::string_view name) override {
+        const auto found = image_sizes.find(name);
+        if (found == image_sizes.end()) return std::nullopt;
+        return found->second;
+    }
+    std::optional<ReplayState> replay_now;
+    std::optional<ReplayState> replay_state() override { return replay_now; }
+    std::vector<ReplayKey> replay_keys() override {
+        if (!replay_now) return {};
+        return {{0, 1.5, 1, 65.0f, 0.25f}, {0, 3.0, 0, 70.0f, 1.0f}};
+    }
+    std::uint64_t replay_copy_keys(std::string_view plugin) override {
+        calls.push_back(std::format("replay copy {}", plugin));
+        return replay_now ? 7 : 0;
+    }
+    std::string replay_put_keys(std::string_view plugin, std::uint64_t copy, std::size_t& put) override {
+        calls.push_back(std::format("replay put {} {}", plugin, copy));
+        if (copy != 7) return "no such copy of this plugin's";
+        put = 2;
+        return {};
+    }
+    std::optional<ReplaySkater> replay_skater() override {
+        if (!replay_now) return std::nullopt;
+        return ReplaySkater{{1, 2, 3}, {1, 3, 3}, {1, 0.5f, 3}};
+    }
+    std::string camera_offset(std::string_view plugin, std::optional<CameraOffset> offset) override {
+        if (!offset) {
+            calls.push_back(std::format("camera offset {} none", plugin));
+            return {};
+        }
+        calls.push_back(std::format("camera offset {} turn {:.1f} {:.1f} {:.1f} move {:.2f} {:.2f} {:.2f} fov {:.0f} zoom {:.2f}", plugin, offset->turn[0],
+                                    offset->turn[1], offset->turn[2], offset->move[0], offset->move[1], offset->move[2], offset->fov, offset->zoom));
+        return {};
+    }
     std::string freeze(std::string_view plugin, bool on) override {
         calls.push_back(std::format("freeze {} {}", plugin, on ? "on" : "off"));
         return {};
@@ -5517,6 +5618,13 @@ void plugins_compose_pictures_from_steps() {
         assert(w == 64 and h == 32, "a data folder picture's size")
         local nothing, reason = P.size("art/none.png")
         assert(nothing == nil and reason:find("PNG"), tostring(reason))
+        local pw, ph, px = P.pixels("art/paper.png")
+        assert(pw == 2 and ph == 1 and buffer.len(px) == 8 and buffer.readu8(px, 0) == 255 and buffer.readu8(px, 3) == 255 and
+            buffer.readu8(px, 7) == 0, "a picture's pixels, red, green, blue and alpha")
+        assert(P.pixels("data:shots/a.jpg") == 2, "a data folder picture's too")
+        local no_pixels, no_why = P.pixels("art/none.png")
+        assert(no_pixels == nil and no_why:find("PNG"), tostring(no_why))
+        assert(not pcall(P.pixels, "notes.txt") and not pcall(P.pixels, "data:../other/a.png"), "pixels of a picture of its own")
         assert(not pcall(P.size, "notes.txt") and not pcall(P.size, "data:../other/a.png"), "a picture of its own")
 
         reskate.console.command("paint", "x", function(args)
@@ -7120,16 +7228,17 @@ void plugins_run_a_screen_shader() {
 }
 
 // reskate.world.shader: the plugin's file checked as a screen shader's is, its values and heights, its data as a buffer
-// of float4s, its anchor and its cost; refused without "world.shader" ("screen.shader" is not enough).
+// of float4s, its pictures by slot, its anchor and its cost; refused without "world.shader" ("screen.shader" is not enough).
 void plugins_run_a_world_shader() {
     TestEnvironment environment;
     auto& game = environment.fake;
     Host host(environment, Side::client);
     const std::map<std::string, std::string> files{
-        {manifest_file, manifest(R"("world.shader")")},
+        {manifest_file, manifest(R"("world.shader", "files")")},
         {"shaders/tint.hlsl", "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return reskate_picture.Sample(reskate_point, uv); }"},
         {"shaders/tint.dxil", shader_container("DXIL", 0x00000060)},
         {"shaders/vertex.dxil", shader_container("DXIL", 0x00010060)},
+        {"images/hood.png", std::string("\x89PNG\r\n\x1a\n", 8) + std::string(40, 'x')},
         {"plugin/main.lua", R"(
         local values = {}
         for i = 1, 48 do values[i] = i / 2 end
@@ -7147,9 +7256,29 @@ void plugins_run_a_world_shader() {
         assert(not pcall(reskate.world.shader_data, buffer.create(65536 + 16)), "at most 64 KB")
         assert(not pcall(reskate.world.shader_data, "not a buffer"), "a buffer")
         assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {heights = "yes"}), "heights is true or false")
+        assert(reskate.world.shader("shaders/tint.dxil", {mips = true}))
+        assert(reskate.world.shader("shaders/tint.dxil", {mips = true, shown = true}))
+        assert(reskate.world.shader("shaders/tint.dxil", {mips = true, shown = true, export_frame = true}))
+        assert(not pcall(reskate.world.shader, "shaders/tint.dxil", {export_frame = true}), "export_frame needs shown")
+        assert(not pcall(reskate.world.shader, "shaders/tint.dxil", {shown = true, export_frame = 1}), "export_frame is true or false")
+        assert(reskate.world.shader("shaders/tint.dxil", {mips = true, shown = true, export_frame = true, depth = false}))
+        assert(not pcall(reskate.world.shader, "shaders/tint.dxil", {depth = "no"}), "depth is true or false")
+        assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {shown = "yes"}), "shown is true or false")
+        assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {mips = 1}), "mips is true or false")
         assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {values = {"a"}}), "values are numbers")
         assert(not pcall(reskate.world.shader, "shaders/vertex.dxil"), "a pixel shader")
         assert(not pcall(reskate.world.shader_anchor, "here"), "an anchor is a position")
+        assert(reskate.world.shader_image(0, "images/hood.png"))
+        assert(reskate.world.shader_image(3, nil))
+        assert(not pcall(reskate.world.shader_image, 4, "images/hood.png"), "pictures 0 to 3")
+        assert(not pcall(reskate.world.shader_image, -1, nil), "pictures 0 to 3")
+        assert(not pcall(reskate.world.shader_image, 1, "images/missing.png"), "a file in the package")
+        assert(not pcall(reskate.world.shader_image, 1, "../outside.png"), "inside the package")
+        assert(reskate.files.write("overlays/hood.png", "PNG bytes"))
+        assert(reskate.world.shader_image(2, "data:overlays/hood.png"), "a picture of the data folder")
+        local none, none_why = reskate.world.shader_image(2, "data:overlays/missing.png")
+        assert(not none and none_why:find("cannot be read"), tostring(none_why))
+        assert(not pcall(reskate.world.shader_image, 2, "data:../outside.png"), "inside the data folder")
         assert(reskate.world.shader(nil))
         reskate.log("snowed")
     )"}};
@@ -7161,18 +7290,29 @@ void plugins_run_a_world_shader() {
           "HLSL reaches the game with its values and the heights asked for\n" + environment.all());
     check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00", files.at("shaders/tint.dxil").size())),
           "DXIL reaches the game as DXIL, with no heights unless asked\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00 mips", files.at("shaders/tint.dxil").size())),
+          "The picture's mips are asked for when the plugin wants them\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00 mips shown", files.at("shaders/tint.dxil").size())),
+          "and the picture as shown\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00 mips shown frame", files.at("shaders/tint.dxil").size())),
+          "export_frame reaches the game");
+    check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00 mips shown frame nodepth", files.at("shaders/tint.dxil").size())),
+          "and depth = false");
     check(game.called("world data world 32 1.50") && game.called("world data world none"), "Its data as float4s, and none");
     check(game.called("world anchor world 1.0 2.0 3.0") && game.called("world anchor world none"), "Its anchor, and none");
+    check(game.called(std::format("world image world 0 images/hood.png {}", files.at("images/hood.png").size())) && game.called("world image world 3 none"),
+          "Its pictures by slot, and none" + environment.all());
+    check(!game.called("world image world 4") && !game.called("world image world 1"), "Pictures not right never reach the game");
     check(game.called("world world none"), "nil ends it");
     check(!game.called("world data world 20") && !game.called("shaders/vertex.dxil"), "Data and files that are not right never reach the game");
     host.apply({package("sneaky", {{manifest_file, manifest(R"("screen.shader")")}, {"shaders/tint.hlsl", files.at("shaders/tint.hlsl")}, {"plugin/main.lua", R"(
         reskate.log("world " .. tostring(pcall(reskate.world.shader, "shaders/tint.hlsl")) .. " " .. tostring(pcall(reskate.world.shader_data, nil)) .. " " ..
             tostring(pcall(reskate.world.shader_anchor, nil)) .. " " .. tostring(pcall(reskate.world.shader_cost)) .. " " ..
-            tostring(pcall(reskate.world.shader_clock)))
+            tostring(pcall(reskate.world.shader_clock)) .. " " .. tostring(pcall(reskate.world.shader_image, 0, nil)))
     )"}})});
     ticks(host, environment, 1);
-    check(environment.logged("[sneaky] world false false false false false"), "world.shader is needed\n" + environment.all());
-    check(!game.called("world sneaky") && !game.called("world data sneaky") && !game.called("world anchor sneaky"),
+    check(environment.logged("[sneaky] world false false false false false false"), "world.shader is needed\n" + environment.all());
+    check(!game.called("world sneaky") && !game.called("world data sneaky") && !game.called("world anchor sneaky") && !game.called("world image sneaky"),
           "Nothing of a plugin without it reaches the game");
 }
 
@@ -7263,6 +7403,231 @@ void plugins_reach_cruise_and_read_the_mouse() {
 // What the Filmer's port needs besides: something carried (seen by the others only), a pose only you
 // see, a step in the camera height cycle and its event, the nametags held off, the board hidden from
 // everyone, and a camcorder in the hand wear slot.
+// reskate.camera.offset: the picture's camera turned, moved and zoomed (degrees, metres), its field of view of the plugin's
+// own; numbers out of range refused before they reach the game; nil ends it; refused without "camera".
+void plugins_offset_the_camera() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({package("handheld", {{manifest_file, manifest(R"("camera")")}, {"plugin/main.lua", R"(
+        assert(reskate.camera.offset({turn = vector.create(1.5, -2, 0.25), move = vector.create(0.1, 0, -0.05), fov = 75, zoom = 1.1}))
+        assert(reskate.camera.offset({zoom = 0.9}))
+        assert(reskate.camera.offset(nil))
+        assert(not pcall(reskate.camera.offset, {turn = vector.create(200, 0, 0)}), "turns are -180 to 180")
+        assert(not pcall(reskate.camera.offset, {move = vector.create(0, 0, 60)}), "moves are -50 to 50")
+        assert(not pcall(reskate.camera.offset, {turn = 5}), "a turn is a vector")
+        assert(not pcall(reskate.camera.offset, {fov = 5}), "fov is 10 to 170")
+        assert(not pcall(reskate.camera.offset, {zoom = 0}), "zoom is 0.1 to 10")
+        reskate.log("offset")
+    )"}}), package("nosy", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log("offset " .. tostring(pcall(reskate.camera.offset, {zoom = 2})))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[handheld] offset"), "camera.offset's calls work\n" + environment.all());
+    check(game.called("camera offset handheld turn 1.5 -2.0 0.2 move 0.10 0.00 -0.05 fov 75 zoom 1.10") &&
+              game.called("camera offset handheld turn 0.0 0.0 0.0 move 0.00 0.00 0.00 fov 0 zoom 0.90") && game.called("camera offset handheld none"),
+          "The offset reaches the game as given, and nil ends it\n" + environment.all());
+    check(!game.called("camera offset handheld turn 200") && !game.called("fov 5 "), "Numbers out of range never reach the game");
+    check(environment.logged("[nosy] offset false") && !game.called("camera offset nosy"), "camera.offset needs the camera permission");
+}
+
+// reskate.replay: the replay editor's time, timeline and chunks, its camera keys (read, copied by number and put back), and
+// the replay's skater; nil and empty outside the editor; refused without "replay".
+void plugins_read_the_replay_editor() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Game::ReplayState state;
+    state.time = 12.5, state.playhead = 10, state.from = 2, state.to = 40;
+    state.timeline = true, state.start = 5, state.length = 20, state.at = 0.25f, state.trim_from = 0.25f, state.trim_to = 0.75f;
+    state.shown_from = 0.25f, state.shown_to = 0.75f;
+    state.chunks = {{2, 30, 0, 0.5f}, {31, 40, 0.5f, 1}};
+    state.exporting = true, state.frame = 30, state.fps = 60;
+    game.replay_now = state;
+    Host host(environment, Side::client);
+    host.apply({package("cam", {{manifest_file, manifest(R"("replay")")}, {"plugin/main.lua", R"(
+        local s = reskate.replay.state()
+        assert(s and s.time == 12.5 and s.playhead == 10 and s.from == 2 and s.to == 40, "its times")
+        assert(s.exporting and s.frame == 30 and s.fps == 60 and not s.ui_hidden and not s.keys_playing, "the export")
+        assert(s.timeline and s.timeline.start == 5 and s.timeline.length == 20 and s.timeline.at == 0.25, "the timeline")
+        assert(s.timeline.trim_from == 0.25 and s.timeline.trim_to == 0.75 and s.timeline.shown_from == 0.25, "the trim")
+        assert(#s.chunks == 2 and s.chunks[1].clock_to == 30 and s.chunks[2].from == 0.5, "the chunks")
+        local keys = reskate.replay.keys()
+        assert(#keys == 2 and keys[1].camera == "free" and keys[2].camera == "orbit" and keys[1].speed == 0.25 and keys[2].fov == 70, "the keys")
+        local copy = reskate.replay.copy_keys()
+        assert(copy == 7, "a copy's number")
+        assert(reskate.replay.put_keys(copy) == 2, "put back")
+        local none, why = reskate.replay.put_keys(8)
+        assert(none == nil and why, "another's copy is not put back")
+        assert(not pcall(reskate.replay.put_keys, 0), "a copy's number is 1 on")
+        assert(not pcall(reskate.replay.put_keys, 1.5), "and whole")
+        local skater = reskate.replay.skater()
+        assert(skater and skater.body.y == 2 and skater.board.y == 0.5, "the skater")
+        reskate.log("replayed")
+    )"}}), package("nosy", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log("replay " .. tostring(pcall(reskate.replay.state)) .. " " .. tostring(pcall(reskate.replay.keys)) .. " " ..
+            tostring(pcall(reskate.replay.copy_keys)) .. " " .. tostring(pcall(reskate.replay.put_keys, 7)) .. " " .. tostring(pcall(reskate.replay.skater)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[cam] replayed"), "reskate.replay reads the editor\n" + environment.all());
+    check(game.called("replay copy cam") && game.called("replay put cam 7") && game.called("replay put cam 8"), "Copies are the plugin's own");
+    check(environment.logged("[nosy] replay false false false false false") && !game.called("replay copy nosy") && !game.called("replay put nosy"),
+          "reskate.replay needs the replay permission\n" + environment.all());
+    // Outside the editor: nil and empty.
+    game.replay_now.reset();
+    host.apply({package("later", {{manifest_file, manifest(R"("replay")")}, {"plugin/main.lua", R"(
+        assert(reskate.replay.state() == nil and #reskate.replay.keys() == 0 and reskate.replay.skater() == nil)
+        local copy, why = reskate.replay.copy_keys()
+        assert(copy == nil and why)
+        reskate.log("outside")
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[later] outside"), "Outside the replay editor there is nothing to read\n" + environment.all());
+}
+
+// reskate.world.light: a spot light of the plugin's own, shining from its position along its direction (the transform's
+// back is the other way), its brightness, reach, beam and colour as given or as they come; numbers out of range refused;
+// nil takes it away; refused without "world.lights".
+void plugins_make_lights() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({package("lamp", {{manifest_file, manifest(R"("world.lights")")}, {"plugin/main.lua", R"(
+        assert(reskate.world.light("camera", {position = vector.create(1, 2, 3), direction = vector.create(0, 0, 2), lumens = 24000, range = 15,
+            beam = 60, core = 20, colour = vector.create(1, 0.9, 0.75), shadows = false}))
+        assert(reskate.world.light("lamp", {position = vector.create(0, 5, 0), direction = vector.create(0, -1, 0)}))
+        assert(reskate.world.light("camera", nil))
+        assert(not pcall(reskate.world.light, "x", {position = vector.create(0, 0, 0)}), "a direction")
+        assert(not pcall(reskate.world.light, "x", {position = vector.create(0, 0, 0), direction = vector.create(0, 0, 0)}), "of some length")
+        assert(not pcall(reskate.world.light, "x", {position = vector.create(0, 0, 0), direction = vector.create(1, 0, 0), beam = 200}), "beam 1 to 179")
+        assert(not pcall(reskate.world.light, "x", {position = vector.create(0, 0, 0), direction = vector.create(1, 0, 0), beam = 30, core = 40}), "core within the beam")
+        assert(not pcall(reskate.world.light, "x", {position = vector.create(0, 0, 0), direction = vector.create(1, 0, 0), colour = vector.create(-1, 0, 0)}), "colour 0 to 10")
+        assert(not pcall(reskate.world.light, "", nil), "a name")
+        reskate.log("lit")
+    )"}}), package("nosy", {{manifest_file, manifest(R"("world.sets")")}, {"plugin/main.lua", R"(
+        reskate.log("light " .. tostring(pcall(reskate.world.light, "a", {position = vector.create(0, 0, 0), direction = vector.create(1, 0, 0)})))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[lamp] lit"), "world.light's calls work\n" + environment.all());
+    check(game.called("light lamp camera at 1.0 2.0 3.0 back 0.00 0.00 -1.00 lumens 24000 range 15.0 beam 60 core 20 colour 1.00 0.90 0.75") &&
+              !game.called("colour 1.00 0.90 0.75 shadows"),
+          "A light as given: shining along its direction, its numbers, no shadows\n" + environment.all());
+    check(game.called("light lamp lamp at 0.0 5.0 0.0 back 0.00 1.00 0.00 lumens 12000 range 10.0 beam 70 core 35 colour 1.00 1.00 1.00 shadows"),
+          "and as it comes: straight down, white, with shadows\n" + environment.all());
+    check(game.called("light lamp camera none"), "nil takes it away");
+    check(environment.logged("[nosy] light false") && !game.called("light nosy"), "world.light needs world.lights");
+}
+
+// reskate.screen.shape: the picture's shape as width over height, nil to give it back; out of range refused; refused
+// without "screen.shape". reskate.screen.memory: the card's budget, use and the PC's commit room, in MB (settings.read).
+void plugins_shape_the_picture() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({package("camcorder", {{manifest_file, manifest(R"("screen.shape", "settings.read")")}, {"plugin/main.lua", R"(
+        assert(reskate.screen.shape(4 / 3))
+        assert(reskate.screen.shape(nil))
+        assert(not pcall(reskate.screen.shape, 5), "4 at most")
+        assert(not pcall(reskate.screen.shape, 0.1), "0.25 at least")
+        local m = reskate.screen.memory()
+        assert(m and m.budget == 12288 and m.used == 5120 and m.commit_free == 20480, "its memory in MB")
+        reskate.log("shaped")
+    )"}}), package("nosy", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log("shape " .. tostring(pcall(reskate.screen.shape, 1.5)) .. " " .. tostring(pcall(reskate.screen.memory)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[camcorder] shaped"), "screen.shape and screen.memory work\n" + environment.all());
+    check(game.called("shape camcorder 1.3333") && game.called("shape camcorder none") && !game.called("shape camcorder 5"),
+          "The shape reaches the game, and nil gives it back");
+    check(environment.logged("[nosy] shape false false") && !game.called("shape nosy"), "screen.shape needs its permission, screen.memory settings.read");
+}
+
+void plugins_move_exported_videos() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.videos = {{"replay 2.mp4", 1000, 2.0e9, false}, {"replay 1.mp4", 2000, 1.9e9, true}};
+    Host host(environment, Side::client);
+    host.apply({package("editor", {{manifest_file, manifest(R"("videos")")}, {"plugin/main.lua", R"(
+        local list = reskate.videos.list()
+        assert(#list == 2 and list[1].name == "replay 2.mp4" and not list[1].ready and list[2].ready and list[2].bytes == 2000 and
+            list[1].written == 2e9, "the game's videos, newest first")
+        assert(reskate.videos.folder() == nil, "no folder until the player picks one")
+        local ok, why = reskate.videos.move("replay 1.mp4")
+        assert(not ok and why:find("picked"), tostring(why))
+        assert(reskate.videos.pick_folder("Where your videos go"))
+        assert(reskate.videos.folder() == "D:\\Clips", "the folder picked")
+        assert(reskate.videos.move("replay 1.mp4"))
+        local moves = reskate.videos.moved()
+        assert(#moves == 1 and moves[1].name == "replay 1.mp4" and moves[1].to == "replay 1.mp4" and moves[1].why == nil, "how it ended")
+        assert(#reskate.videos.moved() == 0, "said once")
+        assert(not pcall(reskate.videos.move, string.rep("x", 300)), "a name is a file's")
+        assert(reskate.videos.open_folder())
+        reskate.videos.forget_folder()
+        assert(reskate.videos.folder() == nil, "forgotten")
+        reskate.log("moved")
+    )"}}), package("nosy", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log("videos " .. tostring(pcall(reskate.videos.list)) .. " " .. tostring(pcall(reskate.videos.pick_folder)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[editor] moved"), "reskate.videos lists, moves into the picked folder and says how it went\n" + environment.all());
+    check(game.called("pick editor Where your videos go") && game.called("move editor replay 1.mp4") && game.called("open editor") &&
+              game.called("forget editor"),
+          "Each reaches the game");
+    check(environment.logged("[nosy] videos false false") && !game.called("pick nosy"), "reskate.videos needs its permission");
+}
+
+void plugins_draw_the_games_faces_and_prompts() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    const auto folder = std::filesystem::temp_directory_path() / "reskate-plugin-tests-faces";
+    std::error_code error;
+    std::filesystem::remove_all(folder, error);
+    std::filesystem::create_directories(folder);
+    std::ofstream(folder / "game_label.ttf") << "a face"; // the value face not read from the game yet
+    game.face_folder = folder;
+    game.image_sizes["xbox_a"] = {72, 72};
+    plugin_ui::detail::FontMetrics body;
+    body.size = 20;
+    body.advance.fill(10);
+    body.box.fill({1, 4, 9, 16});
+    plugin_ui::set_font(0, body);
+    plugin_ui::set_font(1, body);
+    plugin_ui::set_display(1920, 1080);
+    Host host(environment, Side::client);
+    host.apply({package("panel", {{manifest_file, manifest(R"("overlay")")}, {"plugin/main.lua", R"(
+        reskate.on("draw", function(d)
+            d:text(vector.create(10, 10, 0), "LENS", {font = "game_label", size = 26})
+            d:text(vector.create(10, 40, 0), "1.00x", {font = "game_value", size = 26})
+            local w, h = d:game_image_size("xbox_a")
+            assert(w == 72 and h == 72, "a picture's size as it is kept")
+            assert(d:game_image_size("ps_cross") == nil, "nil while it is not read")
+            assert(not pcall(d.game_image_size, d, "xbox_z"), "only the game's pictures")
+            d:game_image("key", vector.create(0, 0, 0), vector.create(120, 40, 0), {fit = "panel", edge = 20})
+            d:game_image("replay_camera", vector.create(0, 0, 0), vector.create(40, 40, 0))
+            reskate.log("drew")
+        end)
+    )"}})});
+    ticks(host, environment, 3);
+    check(environment.logged("[panel] drew"), "A plugin draws in the game's faces and its prompts\n" + environment.all());
+    using Kind = plugin_ui::Shape::Kind;
+    check(environment.layers.size() == 1, "It has a layer\n" + environment.all());
+    {
+        const auto& layer = environment.layers[0];
+        check(layer.fonts && layer.fonts->size() == 3 && (*layer.fonts)[0].ends_with("game_label.ttf") && (*layer.fonts)[2].ends_with("game_title.ttf"),
+              "The layer names the files the game's faces are kept in");
+        check(layer.shapes.size() == 4 && layer.shapes[0].style.font == plugin_ui::own_fonts, "A text in one of the game's faces is drawn in it");
+        check(layer.shapes[1].style.font == 1, "One not read from the game yet is drawn in body");
+        check(layer.shapes[2].kind == Kind::game_image && layer.shapes[2].text == "key" && layer.shapes[2].fit == 2 &&
+                  layer.shapes[3].text == "replay_camera",
+              "The prompts and icons are game pictures");
+    }
+    std::ofstream(folder / "game_value.ttf") << "a face";
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    ticks(host, environment, 2);
+    check(environment.layers.size() == 1 && environment.layers[0].shapes.size() == 4 && environment.layers[0].shapes[1].style.font == plugin_ui::own_fonts + 1,
+          "and drawn in its face once it is there\n" + environment.all());
+    std::filesystem::remove_all(folder, error);
+}
+
 void plugins_carry_and_take_a_step_in_the_camera_cycle() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -10003,6 +10368,12 @@ int main() {
         run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
         run(plugins_carry_and_take_a_step_in_the_camera_cycle);
+        run(plugins_offset_the_camera);
+        run(plugins_read_the_replay_editor);
+        run(plugins_make_lights);
+        run(plugins_shape_the_picture);
+        run(plugins_move_exported_videos);
+        run(plugins_draw_the_games_faces_and_prompts);
         run(screen_shader_files_are_checked);
         run(plugins_run_a_screen_shader);
         run(plugins_run_a_world_shader);

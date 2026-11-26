@@ -320,6 +320,135 @@ struct WorldApi {
         lua_setfield(L, -2, "free");
         return 1;
     }
+    // camera.offset({turn = vector(yaw, pitch, roll), move = vector(right, up, forward), fov = degrees, zoom = k} | nil): the
+    // picture's camera moved and turned from where the game puts it, for 0.3 s (so every tick). Yaw turns it right, pitch
+    // up and roll clockwise (degrees, -180 to 180 each, roll first, then pitch, then yaw, about its own axes); move goes
+    // along its own right, up and forward (metres, -50 to 50); fov is its vertical field of view (10 to 170 degrees; 0 or
+    // none its own) and zoom multiplies it (0.1 to 10). The game's cameras, the replay editor's keyframes and other plugins
+    // see the camera as the game puts it; the picture, its shadows and the replay editor's exported videos are drawn from
+    // the moved one. One plugin's at a time. True, or false and why not.
+    static int camera_offset(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "camera", "reskate.camera.offset");
+        if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).camera_offset(plugin.id(), std::nullopt));
+        luaL_checktype(L, 1, LUA_TTABLE);
+        Game::CameraOffset offset;
+        const auto vector_field = [&](const char* name, float most, std::array<float, 3>& out) {
+            lua_getfield(L, 1, name);
+            if (!lua_isnil(L, -1)) {
+                if (!lua_isvector(L, -1)) luaL_error(L, "%s is a vector", name);
+                const float* v = lua_tovector(L, -1);
+                for (std::size_t i = 0; i < 3; ++i) {
+                    if (!std::isfinite(v[i]) || std::abs(v[i]) > most) luaL_error(L, "%s's parts are -%d to %d", name, static_cast<int>(most), static_cast<int>(most));
+                    out[i] = v[i];
+                }
+            }
+            lua_pop(L, 1);
+        };
+        vector_field("turn", 180.0f, offset.turn);
+        vector_field("move", 50.0f, offset.move);
+        offset.fov = static_cast<float>(number_option(L, 1, "fov", 0, 0, 170, "fov is 10 to 170 degrees (0: the camera's own)"));
+        if (offset.fov != 0 && offset.fov < 10) luaL_error(L, "fov is 10 to 170 degrees (0: the camera's own)");
+        offset.zoom = static_cast<float>(number_option(L, 1, "zoom", 1, 0.1, 10, "zoom is 0.1 to 10"));
+        return result(L, game_of(plugin).camera_offset(plugin.id(), offset));
+    }
+    // world.light(name, {position = vector, direction = vector, up = vector, lumens = n, range = metres, beam = degrees,
+    // core = degrees, colour = vector(r, g, b), shadows = true} | nil): a spot light of the plugin's own, `name` its own (1 to
+    // 48 bytes), made through the game's own light renderer: the game lights the world with it as with its own lights,
+    // shadows too, in the replay editor's exported videos as on the screen. It shines from position along direction (`up`
+    // gives its roll; the world's up when none); lumens is its brightness (0 to 25,000,000; 12,000 when none), range how
+    // far it reaches (0.5 to 200 m; 10), beam and core how wide its beam and its bright core are (1 to 179 degrees; 70 and
+    // 35), colour its colour (each 0 to 10; white), shadows whether it casts them (true). Called again it moves and changes;
+    // nil takes it away, as does the plugin stopping or the level going. At most 8 a plugin. True, or false and why not.
+    static int world_light(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.lights", "reskate.world.light");
+        const auto name = checked_text(L, 1, 48, "a light's name");
+        if (name.empty()) luaL_argerror(L, 1, "a light needs a name");
+        if (lua_isnoneornil(L, 2)) return result(L, game_of(plugin).world_light(plugin.id(), name, std::nullopt));
+        luaL_checktype(L, 2, LUA_TTABLE);
+        const auto vector_field = [&](const char* field, bool required, Vec3 fallback) {
+            lua_getfield(L, 2, field);
+            Vec3 v = fallback;
+            if (lua_isnil(L, -1)) {
+                if (required) luaL_error(L, "a light needs its %s", field);
+            } else {
+                v = position_of(L, -1, field);
+            }
+            lua_pop(L, 1);
+            return v;
+        };
+        const auto position = vector_field("position", true, {});
+        const auto direction = vector_field("direction", true, {});
+        const auto up_hint = vector_field("up", false, {0, 1, 0});
+        const auto length = [](const Vec3& v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
+        const auto cross = [](const Vec3& a, const Vec3& b) { return Vec3{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; };
+        Vec3 back{0.0f - direction[0], 0.0f - direction[1], 0.0f - direction[2]}; // (0 - x: no -0 from a 0)
+        const float lb = length(back);
+        if (!(lb > 1e-4f)) luaL_error(L, "a light's direction has no length");
+        for (auto& v : back) v /= lb;
+        auto right = cross(up_hint, back);
+        float lr = length(right);
+        if (!(lr > 1e-4f)) {
+            right = cross(Vec3{0, 0, 1}, back); // straight up or down: any roll
+            lr = length(right);
+        }
+        for (auto& v : right) v /= lr;
+        const auto up = cross(back, right);
+        Game::WorldLight light;
+        light.transform = {right[0], right[1], right[2], 0, up[0], up[1], up[2], 0, back[0], back[1], back[2], 0, position[0], position[1], position[2], 1};
+        light.lumens = static_cast<float>(number_option(L, 2, "lumens", 12000, 0, 25000000, "lumens is 0 to 25,000,000"));
+        light.range = static_cast<float>(number_option(L, 2, "range", 10, 0.5, 200, "range is 0.5 to 200 metres"));
+        light.beam = static_cast<float>(number_option(L, 2, "beam", 70, 1, 179, "beam is 1 to 179 degrees"));
+        light.core = static_cast<float>(number_option(L, 2, "core", std::min(35.0, static_cast<double>(light.beam)), 0, 179, "core is 0 to 179 degrees"));
+        if (light.core > light.beam) luaL_error(L, "a light's core is no wider than its beam");
+        lua_getfield(L, 2, "colour");
+        if (!lua_isnil(L, -1)) {
+            if (!lua_isvector(L, -1)) luaL_error(L, "colour is a vector of red, green and blue");
+            const float* c = lua_tovector(L, -1);
+            for (std::size_t i = 0; i < 3; ++i) {
+                if (!std::isfinite(c[i]) || c[i] < 0 || c[i] > 10) luaL_error(L, "a light's colour is 0 to 10 for each of red, green and blue");
+                light.colour[i] = c[i];
+            }
+        }
+        lua_pop(L, 1);
+        light.shadows = flag_option(L, 2, "shadows", true);
+        return result(L, game_of(plugin).world_light(plugin.id(), name, light));
+    }
+    // screen.shape(aspect | nil): the game's picture in another shape, its width over its height (0.25 to 4: 4/3 is a
+    // camcorder's 4:3), as big as fits in the middle of the monitor with black around it, and rendered in that shape (not
+    // the screen's picture stretched or cut), at the monitor's own pixels. nil gives the screen's own shape back, as the
+    // plugin stopping does. It needs the game in borderless full screen (the game's default), and nothing changes while the
+    // replay editor exports a video. One plugin's at a time. True, or false and why not.
+    static int screen_shape(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "screen.shape", "reskate.screen.shape");
+        if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).screen_shape(plugin.id(), std::nullopt));
+        const double aspect = luaL_checknumber(L, 1);
+        if (!(aspect >= 0.25 && aspect <= 4)) luaL_argerror(L, 1, "a shape is its width over its height, 0.25 to 4");
+        return result(L, game_of(plugin).screen_shape(plugin.id(), static_cast<float>(aspect)));
+    }
+    // screen.memory(): {budget, used, commit_free}, megabytes: the graphics card's memory Windows gives the game now and what
+    // it uses of it, and how much the PC can still commit (its RAM and page file); nil while the card is not known. For a
+    // plugin that renders the game finer (Render.ResolutionScale) to stay within what the card holds.
+    static int screen_memory(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "settings.read", "reskate.screen.memory");
+        const auto m = game_of(plugin).graphics_memory();
+        if (!m) {
+            lua_pushnil(L);
+            return 1;
+        }
+        constexpr double megabyte = 1024.0 * 1024.0;
+        lua_createtable(L, 0, 3);
+        lua_pushnumber(L, static_cast<double>(m->budget) / megabyte);
+        lua_setfield(L, -2, "budget");
+        lua_pushnumber(L, static_cast<double>(m->used) / megabyte);
+        lua_setfield(L, -2, "used");
+        lua_pushnumber(L, static_cast<double>(m->commit_free) / megabyte);
+        lua_setfield(L, -2, "commit_free");
+        return 1;
+    }
     // ---- trainer: one save point of the plugin's own -------------------------------------------
     static int set_point(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -3860,6 +3989,34 @@ struct WorldApi {
             if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's heights is true or false");
             shader.heights = lua_toboolean(L, -1) != 0;
             lua_pop(L, 1);
+            // mips = true: the picture's copy (t0) with its mips, each half the one above, for a lens that squeezes the
+            // picture or a blur (reskate_display.z says how many).
+            lua_getfield(L, 2, "mips");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's mips is true or false");
+            shader.mips = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            // shown = true: that copy is the picture as the screen shows it (through the game's display mapping: linear
+            // light, 1 the screen's white), for a shader that works in the screen's colours; it writes its result through
+            // reskate_unshown.
+            lua_getfield(L, 2, "shown");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's shown is true or false");
+            shader.shown = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            // export_frame = true (with shown): in a replay export, drawn into the video's own frames as the game finishes
+            // them (as the screen shows them: reskate_display.x is 2 and reskate_unshown writes the screen's sRGB), not into
+            // the world's picture; for a shader that grades or bends the finished picture. The game makes a video's frames
+            // its own ways (a picture shape scales them), and the frame is where they all end.
+            lua_getfield(L, 2, "export_frame");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's export_frame is true or false");
+            shader.export_frame = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            if (shader.export_frame && !shader.shown) luaL_error(L, "a world shader's export_frame needs shown = true");
+            // depth = false: the shader reads no depth (t1 may be empty), so it is drawn on frames whose depth is not found
+            // too (scrubbing the replay editor, the game draws a smaller one for a while). heights need the depth.
+            lua_getfield(L, 2, "depth");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's depth is true or false");
+            shader.depth = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
         }
         const auto& file = shader_file(L, plugin, path, "world shader");
         shader.bytes = file.bytes;
@@ -3880,6 +4037,45 @@ struct WorldApi {
             bytes = std::make_shared<const std::string>(static_cast<const char*>(data), length);
         }
         return result(L, game_of(plugin).world_shader_data(plugin.id(), std::move(bytes)));
+    }
+    // world.shader_image(slot, file | nil): one of the plugin's pictures for its world shader, `slot` 0 to 3 (its
+    // reskate_image0 to reskate_image3, t4 to t7): a PNG, JPEG or BMP file of its package, at most 4096 pixels a side and
+    // 16 MB; kept until replaced, nil clears it. The same file again is kept as it is, so it may be called every tick. Or
+    // "data:<path>", a picture of its data folder or of a folder beside the game its manifest names (a player's own,
+    // "data:<folder>:<path>"; the files permission, a file call): read again at each call, so called when it changes. The
+    // shader reads 0 there until the picture is decoded and on the GPU, a frame or two on. True, or false and why not.
+    static int world_shader_image(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.shader", "reskate.world.shader_image");
+        const lua_Integer slot = luaL_checkinteger(L, 1);
+        if (slot < 0 || slot >= static_cast<lua_Integer>(screen_shader::world_image_count)) luaL_argerror(L, 1, "a world shader's pictures are 0 to 3");
+        if (lua_isnoneornil(L, 2)) return result(L, game_of(plugin).world_shader_image(plugin.id(), static_cast<int>(slot), {}, nullptr));
+        const std::string path = luaL_checkstring(L, 2);
+        if (path.starts_with("data:")) {
+            need(L, plugin, "files", "a data: picture for the world shader");
+            if (!within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, plugin.limits_.file_calls_per_second))
+                luaL_error(L, "more than %d file calls in a second", plugin.limits_.file_calls_per_second);
+            const auto data = data_path(L, 2, path.substr(5), false);
+            std::string bytes;
+            std::string why;
+            {
+                const Plugin::Untimed untimed{plugin}; // reading it
+                why = game_of(plugin).files_read(plugin.id(), data, bytes);
+            }
+            if (!why.empty()) return result(L, "the picture " + path + " cannot be read: " + why);
+            if (bytes.empty() || bytes.size() > screen_shader::world_image_most_bytes) return result(L, "the picture " + path + " is empty or over 16 MB");
+            return result(L, game_of(plugin).world_shader_image(plugin.id(), static_cast<int>(slot), path, std::make_shared<const std::string>(std::move(bytes))));
+        }
+        auto found = plugin.shader_images_.find(path);
+        if (found == plugin.shader_images_.end()) {
+            const Plugin::Untimed untimed{plugin}; // reading it
+            std::string error;
+            auto bytes = read_package_file(package_file(L, plugin, path), screen_shader::world_image_most_bytes, error);
+            if (bytes.empty()) luaL_error(L, "the picture %s cannot be read: %s", path.c_str(), error.empty() ? "it is empty" : error.c_str());
+            if (plugin.shader_images_.size() >= 8) plugin.shader_images_.clear(); // a few kept, not every one ever used
+            found = plugin.shader_images_.emplace(path, std::make_shared<const std::string>(std::move(bytes))).first;
+        }
+        return result(L, game_of(plugin).world_shader_image(plugin.id(), static_cast<int>(slot), path, found->second));
     }
     // world.shader_anchor(position | nil): where the world's depth's scale is measured, for 0.3 s (so every tick): a
     // place on screen the plugin knows, standing about two metres tall over it (the skater's place).
@@ -4097,7 +4293,8 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"mount", board_mount}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}, {"parameter_scopes", board_parameter_scopes}});
-    add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
+    add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get},
+                                {"cycle", camera_cycle}, {"offset", camera_offset}});
     add_functions(L, "trainer", {{"set_point", set_point}, {"back", back}, {"hold_preset", hold_preset}});
     add_functions(L, "hud", {{"hide", hide_hud}, {"corner", hud_corner}, {"score_line", score_line}});
     add_functions(L, "time", {{"slow", slow}, {"speed", speed}});
@@ -4110,7 +4307,8 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "world", {{"set_time", set_time}, {"time", time_now}, {"set_control", set_control}, {"set_park", set_park}, {"controls", controls},
                                {"controls_text", controls_text}, {"set_atmosphere", set_atmosphere}, {"pick", world_pick}, {"probe", world_probe}, {"map", world_map},
                                {"shader", world_shader_set}, {"shader_data", world_shader_data}, {"shader_anchor", world_shader_anchor},
-                               {"shader_cost", world_shader_cost}, {"shader_clock", world_shader_clock}});
+                               {"shader_cost", world_shader_cost}, {"shader_clock", world_shader_clock}, {"shader_image", world_shader_image},
+                               {"light", world_light}});
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},
@@ -4141,7 +4339,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                {"write", input_write}, {"hide", input_hide}, {"cursor", input_cursor}, {"text", input_text}});
     add_functions(L, "room", {{"open", room_open}, {"leave", room_leave}, {"state", room_state}, {"show", room_show}, {"place", room_place}});
     add_functions(L, "ui", {{"screen", screen}, {"open", open}, {"close", close}});
-    add_functions(L, "screen", {{"look", screen_look}, {"slap", screen_slap}, {"shader", screen_shader}});
+    add_functions(L, "screen", {{"look", screen_look}, {"slap", screen_slap}, {"shader", screen_shader}, {"shape", screen_shape}, {"memory", screen_memory}});
 }
 
 std::uint32_t combo_of(std::string_view name) {

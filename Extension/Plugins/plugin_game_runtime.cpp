@@ -38,6 +38,10 @@
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Skater/xray.h"
 #include "Extension/UI/hud_corner.h"
+#include "Extension/Rendering/view_offset.h"
+#include "Extension/ReplayKeyframes/replay_editor.h"
+#include "Extension/World/plugin_lights.h"
+#include "Extension/Rendering/picture_shape.h"
 #include "Extension/UI/score_line_hud.h"
 #include "Extension/Progression/challenge_attempts.h"
 #include "Extension/Throwdowns/custom_modes.h"
@@ -98,6 +102,9 @@
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include <shellapi.h>
 #include "Engine/Core/Platform/launcher_support.h"
+#include "Extension/Rendering/export_videos.h"
+#include "Extension/UI/Overlay/game_faces.h"
+#include "Extension/UI/Overlay/game_images.h"
 #include "Extension/Plugins/plugin_manifest.h"
 #include <algorithm>
 #include <array>
@@ -1200,6 +1207,18 @@ public:
     std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view plugin, const picture::File& file) override {
         return picture::size_of(file.data.empty() ? file.file : data_picture(plugin, file.data));
     }
+    std::optional<picture::Pixels> picture_pixels(std::string_view plugin, const picture::File& file) override {
+        const auto path = file.data.empty() ? file.file : data_picture(plugin, file.data);
+        std::error_code error;
+        const auto size = std::filesystem::file_size(path, error);
+        if (error || size == 0 || size > picture::most_picture_bytes) return std::nullopt;
+        std::ifstream in(path, std::ios::binary);
+        std::string bytes(static_cast<std::size_t>(size), '\0');
+        if (!in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) return std::nullopt;
+        picture::Pixels pixels;
+        if (!picture::decode(bytes, pixels)) return std::nullopt;
+        return pixels;
+    }
     // A plugin's own font: DirectWrite reads it (plugin_font.h), once a file, and the overlay sets its
     // texts by the same metrics (Extension/UI/Overlay/plugin_fonts.cpp).
     std::shared_ptr<const plugin_ui::detail::FontMetrics> plugin_font_metrics(std::string_view, std::string_view, const std::filesystem::path& file) override {
@@ -1607,10 +1626,14 @@ public:
             world_shader::clear(plugin);
             return {};
         }
-        return world_shader::set(plugin, shader->file, shader->bytes, shader->kind, shader->values, shader->heights);
+        return world_shader::set(plugin, shader->file, shader->bytes, shader->kind, shader->values, shader->heights, shader->mips, shader->shown,
+                                 shader->export_frame, shader->depth);
     }
     std::string world_shader_data(std::string_view plugin, std::shared_ptr<const std::string> bytes) override {
         return world_shader::set_data(plugin, std::move(bytes));
+    }
+    std::string world_shader_image(std::string_view plugin, int slot, std::string_view name, std::shared_ptr<const std::string> bytes) override {
+        return world_shader::set_image(plugin, static_cast<std::size_t>(slot), name, std::move(bytes));
     }
     void world_shader_anchor(std::string_view plugin, std::optional<Vec3> at) override { world_shader::set_anchor(plugin, at); }
     std::optional<double> world_shader_cost(std::string_view plugin) override { return world_shader::cost_ms(plugin); }
@@ -2313,6 +2336,72 @@ public:
         camera_releasing_ = true;
         camera_status_.clear();
     }
+    std::string camera_offset(std::string_view plugin, std::optional<CameraOffset> offset) override {
+        if (!offset) return view_offset::set(plugin, std::nullopt);
+        return view_offset::set(plugin, view_offset::Offset{offset->turn, offset->move, offset->fov, offset->zoom});
+    }
+    std::optional<ReplayState> replay_state() override {
+        const auto s = replay_editor::state(base_);
+        if (!s) return std::nullopt;
+        ReplayState out;
+        out.time = s->time, out.playhead = s->playhead, out.from = s->from, out.to = s->to;
+        out.timeline = s->timeline.known;
+        out.start = s->timeline.start, out.length = s->timeline.length, out.at = s->at;
+        out.trim_from = s->timeline.trim_from, out.trim_to = s->timeline.trim_to;
+        out.shown_from = s->timeline.shown_from, out.shown_to = s->timeline.shown_to;
+        for (const auto& c : s->timeline.chunks) out.chunks.push_back({c.clock_from, c.clock_to, c.from, c.to});
+        out.keys_playing = s->keys_playing, out.exporting = s->exporting, out.ui_hidden = s->ui_hidden;
+        out.frame = s->frame, out.fps = s->fps;
+        return out;
+    }
+    std::vector<ReplayKey> replay_keys() override {
+        std::vector<ReplayKey> out;
+        for (const auto& k : replay_editor::keys(base_)) out.push_back({k.session, k.time, k.camera, k.fov, k.speed});
+        return out;
+    }
+    std::uint64_t replay_copy_keys(std::string_view plugin) override { return replay_editor::copy_keys(base_, plugin); }
+    std::string replay_put_keys(std::string_view plugin, std::uint64_t copy, std::size_t& put) override {
+        const auto done = replay_editor::put_keys(base_, plugin, copy);
+        if (const auto* why = std::get_if<std::string>(&done)) return *why;
+        put = std::get<std::size_t>(done);
+        return {};
+    }
+    std::string world_light(std::string_view plugin, std::string_view name, std::optional<WorldLight> light) override {
+        if (!light) return plugin_lights::set(base_, plugin, name, std::nullopt);
+        return plugin_lights::set(base_, plugin, name,
+                                  plugin_lights::Light{light->transform, light->lumens, light->range, light->beam, light->core, light->colour, light->shadows});
+    }
+    std::string screen_shape(std::string_view plugin, std::optional<float> aspect) override { return picture_shape::set(plugin, aspect); }
+    std::vector<ExportedVideo> exported_videos() override {
+        std::vector<ExportedVideo> result;
+        for (auto& video : export_videos::list()) result.push_back({std::move(video.name), video.bytes, video.written, video.ready});
+        return result;
+    }
+    std::string video_folder(std::string_view plugin) override { return export_videos::folder(plugin); }
+    std::string pick_video_folder(std::string_view plugin, std::string_view title) override { return export_videos::pick_folder(plugin, title); }
+    void forget_video_folder(std::string_view plugin) override { export_videos::forget_folder(plugin); }
+    std::string open_video_folder(std::string_view plugin) override { return export_videos::open_folder(plugin); }
+    std::string move_video(std::string_view plugin, std::string_view name) override { return export_videos::move(plugin, name); }
+    std::vector<VideoMove> video_moves(std::string_view plugin) override {
+        std::vector<VideoMove> result;
+        for (auto& move : export_videos::moved(plugin)) result.push_back({std::move(move.name), std::move(move.to), std::move(move.why)});
+        return result;
+    }
+    std::filesystem::path game_face_file(std::size_t face) override {
+        overlay::game_faces::prepare();
+        return overlay::game_faces::file(face);
+    }
+    std::optional<std::array<int, 2>> game_image_size(std::string_view name) override { return overlay::game_image_size(name); }
+    std::optional<GraphicsMemory> graphics_memory() override {
+        const auto m = picture_shape::memory();
+        if (!m) return std::nullopt;
+        return GraphicsMemory{m->budget, m->usage, m->commit_free};
+    }
+    std::optional<ReplaySkater> replay_skater() override {
+        const auto s = replay_editor::skater(base_);
+        if (!s) return std::nullopt;
+        return ReplaySkater{s->body, s->upper, s->board};
+    }
     std::string camera_status(std::string_view plugin) override {
         if (follower_ == plugin) return multiplayer::party_spectating() ? std::string{} : "Spectate is starting";
         if (camera_holder_ != plugin) return "it does not hold the camera";
@@ -2323,7 +2412,10 @@ public:
         // replay editor, whose picture is the world, though the game counts it a menu.
         const bool replay = base && multiplayer::replay_editor_open(base);
         const bool in_menu = base && multiplayer::sample_game_ui_state(base).in_menu;
-        world_shader::allow(base && ((ready && !in_menu) || replay), in_menu && !replay);
+        world_shader::allow(base && ((ready && !in_menu) || replay), in_menu && !replay, replay);
+        view_offset::tick();
+        plugin_lights::tick(base);
+        picture_shape::tick();
         if (multiplayer::party_spectating()) {
             // Spectate has the lease now, and gives the game's camera back itself.
             camera_shown_ = camera_releasing_ = false;
@@ -2468,6 +2560,11 @@ public:
         }
         screen_shader::clear(plugin);
         world_shader::clear(plugin);
+        view_offset::clear(plugin);
+        replay_editor::forget(plugin);
+        plugin_lights::clear(base_, plugin);
+        picture_shape::clear(plugin);
+        export_videos::forget(plugin);
         if (viewmodeler_ == plugin) {
             viewmodel::unload();
             viewmodeler_.clear();

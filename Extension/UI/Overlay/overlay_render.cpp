@@ -13,6 +13,7 @@
 #include "chat_emotes.h"
 #include "input_capture.h"
 #include "cursor.h"
+#include "Engine/Game/UI/game_window.h"
 #include <algorithm>
 #include <chrono>
 #include <dxgi1_6.h>
@@ -463,6 +464,10 @@ bool setup_graphics() {
     }
     s.window.store(description.OutputWindow);
     {
+        const auto luid = s.device->GetAdapterLuid();
+        publish_game_window(description.OutputWindow, luid.LowPart, luid.HighPart);
+    }
+    {
         std::lock_guard lock(s.window_hook_mutex);
         auto& hook = s.window_hooks[description.OutputWindow];
         if (!hook.installed) {
@@ -793,7 +798,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     // A plugin's world shader (reskate.world.shader): the game's next frame begins after this present.
     if (s.swapchain) {
         DXGI_SWAP_CHAIN_DESC world_chain{};
-        if (SUCCEEDED(s.swapchain->GetDesc(&world_chain))) world_shader::present(world_chain.BufferDesc.Width, world_chain.BufferDesc.Height);
+        if (SUCCEEDED(s.swapchain->GetDesc(&world_chain)))
+            world_shader::present(world_chain.BufferDesc.Width, world_chain.BufferDesc.Height, output_transfer);
     }
     // Keep swapchain/window selection, initialization, stop and resize/fence
     // handling alive while hidden, but do no per-frame UI or backbuffer work --

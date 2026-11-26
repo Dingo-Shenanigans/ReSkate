@@ -49,6 +49,34 @@ inline constexpr std::size_t manager_sessions = 0x10; // EASTL map<int, Session>
 // A key's node in a session's framing map: time at + 0x20, value at + 0x30.
 inline constexpr std::size_t framing_key_time = 0x20;
 inline constexpr std::size_t framing_key_value = 0x30;
+// A session's node in the manager's map: its id (int) at +0x20, the anchor of its framing keys' map at +0x60 (an EASTL map:
+// the node count 0x20 after its anchor).
+inline constexpr std::size_t session_id = 0x20, session_framing_keys = 0x60, map_size_after_anchor = 0x20;
+// A key's value (0x120 bytes from framing_key_value): the time it keeps of itself (double), its camera (int: 0 orbit,
+// 1 free), field of view and playback speed (floats).
+inline constexpr std::size_t value_bytes = 0x120;
+inline constexpr std::size_t value_time = 0xf8, value_fov = 0x104, value_camera = 0x108, value_speed = 0x114;
+// Every frame the manager also keeps where the replay has the skater, for the replay's camera: the body, the upper body and
+// the board, vec4s (world) from +0x90 (read 2026-11-18: the editor's Target: Body and the keys it makes take theirs from
+// there). Not the skater standing where play stopped: the replay draws one of its own.
+inline constexpr std::size_t manager_skater_body = 0x90, manager_skater_upper = 0xa0, manager_skater_board = 0xb0;
+// bool add_framing_key(manager, int session, double time, int camera, int target, float fov, float tilt, float roll,
+// float x_offset, float y_offset, float speed): the game's own add of a framing key, at a time on the replay's clock
+// (snapped to its frames and kept within the replay: key_time), its value filled in from the replay as it is now
+// (fill_framing_key, which takes the target from the manager's +0x90, +0xa0 or +0xb0); false when the session has a key at
+// that time already. It makes the key's node (0x150 bytes) and puts it in the map; session_rebuild then makes it play.
+inline constexpr Fingerprint add_framing_key{0x6065b0, {
+    0x48,0x89,0x5c,0x24,0x18,0x48,0x89,0x74,0x24,0x20,0x89,0x54,0x24,0x10,0x57,0x48,
+    0x83,0xec,0x70,0x48,0x8b,0x41,0x20,0x48,0x8b,0xf9,0x48,0x83,0xc1,0x10,0x41,0x8b}};
+inline constexpr Fingerprint fill_framing_key{0x6087f0, {
+    0xc5,0xfa,0x11,0x5c,0x24,0x20,0x48,0x81,0xec,0x18,0x01,0x00,0x00,0x4c,0x8b,0xd1,
+    0x45,0x8b,0xc8,0x45,0x85,0xc0,0x74,0x2d,0x41,0x83,0xe9,0x01,0x74,0x1d,0x41,0x83}};
+// double key_time(manager, double time): where the add puts a key asked for at a time: snapped to the replay's frames and
+// kept within the part of the replay the editor shows (its trim). Right after the editor opens that part is still empty,
+// and every time lands on its first frame.
+inline constexpr Fingerprint key_time{0x624d20, {
+    0x40,0x53,0x48,0x83,0xec,0x60,0xc5,0xf8,0x28,0xd1,0xc5,0xfb,0x10,0x89,0xd0,0x00,
+    0x00,0x00,0xc5,0xf3,0x59,0x05,0x46,0xdf,0xa4,0x05,0xc5,0xf8,0x29,0x74,0x24,0x50}};
 
 // The segment (0x1e8 bytes): four slots of 0x60 bytes, two blocks of twelve k, Behaviour, Subject.
 inline constexpr std::size_t slot_size = 0x60;

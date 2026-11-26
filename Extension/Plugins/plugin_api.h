@@ -49,6 +49,10 @@ void install_files_api(Plugin& plugin, lua_State* L);
 // A picture composed from drawing steps and written as a PNG, a text measured as one draws it, and a
 // picture's size (reskate.picture, plugin_api_picture.cpp).
 void install_picture_api(Plugin& plugin, lua_State* L);
+// The replay editor's time, timeline, camera keyframes and skater (reskate.replay, plugin_api_replay.cpp).
+void install_replay_api(Plugin& plugin, lua_State* L);
+// The replay editor's exported videos, moved into a folder the player picks (reskate.videos, plugin_api_videos.cpp).
+void install_videos_api(Plugin& plugin, lua_State* L);
 // The clips and sounds read since the last tick (reskate.animation.preload, reskate.audio.preload,
 // plugin_api_world.cpp), handed into the plugin's own and called back. Plugin::tick.
 void deliver_preloads(Plugin& plugin);

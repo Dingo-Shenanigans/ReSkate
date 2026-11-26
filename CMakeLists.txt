@@ -439,7 +439,7 @@ if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
     # The smoother curve: stock at 0, every key met, C2 at 1, and a framing segment the game's spline plays as
     # meant; the saved settings read back as written.
     add_executable(dingosdk_replay_keyframes_tests Extension/ReplayKeyframes/Test/replay_keyframes_tests.cpp
-        Extension/ReplayKeyframes/replay_curve.cpp Extension/ReplayKeyframes/replay_settings.cpp)
+        Extension/ReplayKeyframes/replay_curve.cpp Extension/ReplayKeyframes/replay_settings.cpp Extension/ReplayKeyframes/replay_clock.cpp)
     target_include_directories(dingosdk_replay_keyframes_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME replay_keyframes COMMAND dingosdk_replay_keyframes_tests)
 endif()
