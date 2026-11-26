@@ -1336,9 +1336,9 @@ public:
     // ---- input -------------------------------------------------------------------------------------
     bool camera_mine(std::string_view plugin) const { return !camera_holder_.empty() && camera_holder_ == plugin && camera_shown_; }
     std::optional<FlightInput> flight_input(std::string_view plugin) override {
-        if (!camera_mine(plugin)) return std::nullopt;
-        // Read once a tick: the mouse's movement is used up as it is read.
         const auto now = GetTickCount64();
+        if (!camera_mine(plugin) && (capturer_ != plugin || !capturing())) return std::nullopt;
+        // Read once a tick: the mouse's movement is used up as it is read.
         if (now - flight_read_at_ > 4) {
             flight_read_at_ = now;
             overlay::FlightInput in;
@@ -1472,6 +1472,25 @@ public:
         if (!pad.valid) return std::nullopt;
         return PadInput{pad.left_x, pad.left_y, pad.right_x, pad.right_y, pad.left_trigger, pad.right_trigger, pad.buttons, pad.playstation};
     }
+    void stop_rumble() noexcept {
+        if (rumble_slot_ >= 0) (void)overlay::set_controller_rumble(rumble_slot_, 0, 0);
+        rumble_slot_ = -1;
+    }
+    std::string rumble_pad(std::string_view plugin, float low, float high, unsigned ms) override {
+        if (viewmodeler_ != plugin) return "only the plugin using the current viewmodel can rumble";
+        if (!ms || (low == 0 && high == 0)) { stop_rumble(); return {}; }
+        if (!input_allowed()) return "the game does not have gameplay input";
+        const auto now = GetTickCount64();
+        if (rumble_slot_ >= 0 && now < rumble_next_) return "a rumble pulse was just sent";
+        const int slot = overlay::first_xinput_slot();
+        if (slot < 0) return "there is no XInput controller";
+        if (rumble_slot_ != slot) stop_rumble();
+        if (!overlay::set_controller_rumble(slot, low, high)) return "the controller did not accept rumble";
+        rumble_slot_ = slot;
+        rumble_until_ = now + ms;
+        rumble_next_ = now + 40;
+        return {};
+    }
     std::string write_pad(std::string_view plugin, unsigned controller, std::optional<PadInput> pad) override {
         if (!pad) return input::pad_outputs().write(plugin, controller, std::nullopt, GetTickCount64());
         if (!input_allowed()) return "the game does not have gameplay input";
@@ -1494,18 +1513,25 @@ public:
         for (const auto& sample : joystick::list()) out.push_back({sample.device, sample.name});
         return out;
     }
+    bool presents_input_scene(std::string_view plugin, std::uint64_t now) const noexcept {
+        // A full-screen world replacement can own its controls, like a native plugin camera.
+        return camera_mine(plugin) || (viewmodeler_ == plugin && now < input_scene_until_);
+    }
     std::string capture_input(std::string_view plugin, bool on) override {
         if (!on) {
             if (capturer_ == plugin) capturer_.clear();
             return {};
         }
-        if (!camera_mine(plugin)) return "only while the plugin's camera is shown";
+        const auto now = GetTickCount64();
+        if (!presents_input_scene(plugin, now)) return "only while the plugin's camera or full-screen scene is shown";
+        if (capturer_ != plugin && capturing()) return "another plugin owns the gameplay input";
         capturer_ = plugin;
-        capture_until_ = GetTickCount64() + 250;
+        capture_until_ = now + 250;
         return {};
     }
     bool capturing() const noexcept {
-        return !capturer_.empty() && camera_mine(capturer_) && GetTickCount64() < capture_until_;
+        const auto now = GetTickCount64();
+        return !capturer_.empty() && now < capture_until_ && presents_input_scene(capturer_, now);
     }
     // ---- skater.animation ---------------------------------------------------------------------------
     // The game's own clips, read in the background from the first ask.
@@ -1616,15 +1642,26 @@ public:
     std::optional<double> world_shader_cost(std::string_view plugin) override { return world_shader::cost_ms(plugin); }
     double world_shader_clock() override { return world_shader::clock_seconds(); }
     // ---- viewmodel -----------------------------------------------------------------------------------
-    std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file) override {
+    std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file, const std::vector<std::filesystem::path>& attachments) override {
         if (!viewmodeler_.empty() && viewmodeler_ != plugin) return viewmodeler_ + " has the viewmodel";
         viewmodeler_ = plugin;
-        viewmodel::load(file);
+        viewmodel::load(file,attachments);
         return {};
+    }
+    std::string viewmodel_prepare(std::string_view plugin,const std::filesystem::path& file,const std::vector<std::filesystem::path>& attachments) override {
+        if (!viewmodeler_.empty()&&viewmodeler_!=plugin) return viewmodeler_+" has the viewmodel";
+        if (file.empty()) {if(viewmodeler_==plugin)viewmodel::prepare({});return {};}
+        viewmodeler_=plugin;viewmodel::prepare(file,attachments);return {};
+    }
+    std::string viewmodel_activate_prepared(std::string_view plugin) override {
+        if (viewmodeler_!=plugin) return "this plugin has no viewmodel loaded";
+        return viewmodel::activate_prepared();
     }
     void viewmodel_unload(std::string_view plugin) override {
         if (viewmodeler_ != plugin) return;
         viewmodel::unload();
+        stop_rumble();
+        input_scene_until_ = 0;
         viewmodeler_.clear();
     }
     std::optional<ViewmodelInfo> viewmodel_info(std::string_view plugin) override {
@@ -1635,29 +1672,80 @@ public:
         out.why = now.why;
         for (const auto& clip : now.clips) out.clips.emplace_back(clip.name, clip.duration);
         out.bones = now.bones;
+        out.render_ready = now.render_ready;
+        out.prepared_status=now.prepared_status==viewmodel::Status::ready?"ready":now.prepared_status==viewmodel::Status::loading?"loading":now.prepared_status==viewmodel::Status::failed?"failed":"none";
+        out.prepared_why=now.prepared_why;out.prepared_ready=now.prepared_ready;
+        out.display_status=now.display_status==viewmodel::Status::ready?"ready":now.display_status==viewmodel::Status::loading?"loading":now.display_status==viewmodel::Status::failed?"failed":"none";
+        out.display_why=now.display_why;
         return out;
     }
     std::string viewmodel_show(std::string_view plugin, std::optional<ViewmodelLook> look) override {
         if (viewmodeler_ != plugin) return "this plugin has no viewmodel loaded";
         // Never over the game's own menu (paused, the customization pages): the plugin is told why.
         if (!look || (base_ && multiplayer::sample_game_ui_state(base_).in_menu)) {
+            input_scene_until_ = 0;
+            stop_rumble();
             viewmodel::hide();
             return look ? "the game's menu is open" : std::string{};
         }
         viewmodel::Look v;
+        if (look->reflection) {
+            const auto& source=*look->reflection;viewmodel::Look::Reflection reflection;
+            for (const auto& p:source.portal_views)
+                reflection.portal_views.push_back({p.eye,p.forward,p.up,p.exit,p.normal});
+            reflection.position=source.position;reflection.normal=source.normal;reflection.tint=source.tint;reflection.parts=source.parts;
+            reflection.time=source.time;reflection.distortion=source.distortion;reflection.strength=source.strength;reflection.texture_scale=source.texture_scale;
+            v.reflection=std::move(reflection);
+        }
+        if (look->inset) {
+            const auto& source=*look->inset;viewmodel::Inset inset;
+            inset.position=source.position;inset.forward=source.forward;inset.up=source.up;
+            inset.centre=source.centre;inset.radius=source.radius;inset.projection_offset=source.projection_offset;
+            inset.fov=source.fov;inset.background_alpha=source.background_alpha;
+            inset.hidden_bones=source.hidden_bones;inset.hidden_materials=source.hidden_materials;
+            v.inset=std::move(inset);
+        }
         v.offset = look->offset;
         v.yaw = look->yaw, v.pitch = look->pitch, v.roll = look->roll, v.fov = look->fov;
         v.light = look->light, v.light_colour = look->light_colour, v.sky = look->sky, v.ground = look->ground;
         v.ambient = look->ambient, v.brightness = look->brightness;
+        v.fog=look->fog;v.fog_colour=look->fog_colour;v.fog_exempt_parts=look->fog_exempt_parts;
+        v.transforms = look->transforms;
+        v.opacities = look->opacities;
+        v.depth_points = look->depth_points;
+        v.pose_transform=look->pose_transform;v.part_transforms=look->part_transforms;v.hidden_parts=look->hidden_parts;
+        v.part_effects=look->part_effects;
+        v.material_colours=look->material_colours;
+        v.view_position=look->view_position;v.view_forward=look->view_forward;v.view_up=look->view_up;v.view_fov=look->view_fov;v.backdrop=look->backdrop;
+        v.scene_depth = look->scene_depth;
+        v.scene_clear = look->scene_clear;
+        v.contact_position = look->contact_position; v.contact_normal = look->contact_normal;
+        v.contact_margin = look->contact_margin;
+        v.world_position = look->world_position; v.world_forward = look->world_forward; v.world_up = look->world_up;
         viewmodel::show(v);
+        input_scene_until_ = v.backdrop && v.view_position && v.world_position && !v.scene_depth
+            ? GetTickCount64() + 250 : 0;
         return {};
     }
-    std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade) override {
+    std::string viewmodel_display(std::string_view plugin,const std::filesystem::path& file,std::optional<ViewmodelDisplay> look) override {
+        if (viewmodeler_!=plugin) return "this plugin has no viewmodel loaded";
+        if (!look) {viewmodel::display({},std::nullopt);return {};}
+        if (base_ && multiplayer::sample_game_ui_state(base_).in_menu) {viewmodel::display({},std::nullopt);return "the game's menu is open";}
+        viewmodel::Display out;out.owner=plugin;out.material=look->material;
+        out.position=look->position;out.forward=look->forward;out.up=look->up;
+        out.depth_points=look->depth_points;out.live=look->live;out.scene_clear=look->scene_clear;
+        viewmodel::display(file,out);return {};
+    }
+    std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade, bool restart) override {
         if (viewmodeler_ != plugin) return "this plugin has no viewmodel loaded";
-        return viewmodel::play(clip, {-1, loop, speed, fade});
+        return viewmodel::play(clip, {-1, loop, speed, fade, restart});
     }
     void viewmodel_stop(std::string_view plugin) override {
         if (viewmodeler_ == plugin) viewmodel::stop();
+    }
+    std::string viewmodel_seek(std::string_view plugin, double seconds) override {
+        if (viewmodeler_ != plugin) return "this plugin has no viewmodel loaded";
+        return viewmodel::seek(seconds);
     }
     std::optional<ViewmodelState> viewmodel_state(std::string_view plugin) override {
         if (viewmodeler_ != plugin) return std::nullopt;
@@ -1861,6 +1949,9 @@ public:
         return clip;
     }
     std::string current_trick() override { return skater_animation::current_trick(); }
+    void tick_rumble(bool ready) noexcept {
+        if (rumble_slot_ >= 0 && (GetTickCount64() >= rumble_until_ || !ready || !input_allowed())) stop_rumble();
+    }
     void tick_animation(std::uintptr_t base, std::uintptr_t client) {
         xray::tick();
         hud_corner::tick();
@@ -2469,6 +2560,8 @@ public:
         screen_shader::clear(plugin);
         world_shader::clear(plugin);
         if (viewmodeler_ == plugin) {
+            stop_rumble();
+            input_scene_until_ = 0;
             viewmodel::unload();
             viewmodeler_.clear();
         }
@@ -2563,6 +2656,8 @@ private:
     std::uint64_t pose_at_{};
     std::string looker_;  // the plugin whose look is on the screen (screen_look)
     std::string surfacer_; // the plugin whose surface sound the local skater's sounds have
+    int rumble_slot_{-1};
+    std::uint64_t rumble_until_{}, rumble_next_{}, input_scene_until_{};
     std::string viewmodeler_; // the plugin whose viewmodel is loaded (viewmodel_load)
     std::uint64_t look_at_{};
     std::uint64_t reach_at_{};
@@ -2738,6 +2833,7 @@ bool plugin_freeze_active() noexcept { return the_game && the_game->frozen(); }
 bool plugin_input_capture() noexcept { return the_game && the_game->capturing(); }
 void tick_plugin_sounds(std::uintptr_t image_base, std::uintptr_t client, bool ready) noexcept {
     plugin_sound::tick(image_base, client, ready);
+    if (the_game) the_game->tick_rumble(ready && client != 0);
     try {
         if (the_game) the_game->tick_hud();
     } catch (...) {}

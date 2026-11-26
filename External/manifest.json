@@ -21,8 +21,12 @@
     },
     "local_patches": {
       "backends/imgui_impl_dx12.cpp": {
-        "sha256": "0ee5ef1585a594d610cc2ba1cf01eacff71312392731a36101ea149a9bb6ef30",
-        "description": "Bounded checked font upload, GPU resources retained on submitted-work timeout, error propagated."
+        "sha256": "7cc9778f690a11628baac32d58f0c6842b4d7e13e41599c54cd6d08a2efb7ee0",
+        "description": "Preserve bounded font upload and output transfer handling. Use a separate SDR pipeline to draw a plugin layer onto a world display."
+      },
+      "backends/imgui_impl_dx12.h": {
+        "sha256": "a09aba5788902bbd0f67c5a45c0e00c8a17d17f214180a643174c1f2ae18c51e",
+        "description": "Draw a plugin layer to an SDR texture and restore the swapchain pipeline."
       }
     }
   },

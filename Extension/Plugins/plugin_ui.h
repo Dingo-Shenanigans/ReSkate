@@ -31,6 +31,7 @@ struct Style {
     float thickness = 2;
     bool fill{};
     float rounding{};
+    float rotation{}; // picture rotation in degrees around its centre
     int align{};                       // text: 0 left, 1 centre, 2 right of its point
     bool shadow = true;
     std::array<float, 4> uv{0, 0, 1, 1}; // pictures: the part of the picture drawn (u0, v0, u1, v1)

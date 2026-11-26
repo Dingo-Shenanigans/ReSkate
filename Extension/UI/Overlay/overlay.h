@@ -765,6 +765,8 @@ struct Gamepad {
     unsigned buttons = 0;
 };
 Gamepad read_gamepad(int controller = -1);
+int first_xinput_slot() noexcept;
+bool set_controller_rumble(int slot, float low, float high) noexcept;
 // The ReSkate menu's page reads the controller itself (recording a controller bind): the pad and the
 // arrow keys then go to it, not to ImGui's navigation.
 inline std::atomic<bool>& menu_page_owns_pad() {

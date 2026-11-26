@@ -13,6 +13,7 @@
 #include <array>
 #include <map>
 #include <imgui_internal.h>
+#include <backends/imgui_impl_dx12.h>
 #include <map>
 #include <memory>
 #include <chrono>
@@ -22,6 +23,7 @@
 
 namespace dingosdk::overlay {
 namespace {
+std::unique_ptr<ImDrawList>& surface_draw() {static auto* draw=new std::unique_ptr<ImDrawList>;return *draw;}
 // Render thread: the layers taken by plugins_pending, drawn by draw_plugins.
 std::shared_ptr<const std::vector<plugin_ui::Layer>>& frame() {
     static auto* value = new std::shared_ptr<const std::vector<plugin_ui::Layer>>;
@@ -485,14 +487,15 @@ ImU32 dimmed(ImU32 colour, float by) {
 }
 
 void draw_plugins() {
+    surface_draw().reset();
     // (The glyph pages of plugins' own fonts are kept up whether or not anything is drawn this frame:
     // those of a plugin that has gone are let go.)
     detail::own_fonts_begin();
     const auto layers = frame();
     if (!layers || layers->empty()) return;
-    const auto display = ImGui::GetIO().DisplaySize;
-    if (display.x <= 0 || display.y <= 0) return;
-    const float k = display.y / 1080.0f;
+    const auto native_display = ImGui::GetIO().DisplaySize;
+    if (native_display.x <= 0 || native_display.y <= 0) return;
+    const float native_scale = native_display.y / 1080.0f;
     auto& s = detail::state();
     auto* fallback = ImGui::GetFont();
     const std::array<ImFont*, 5> fonts{s.menu.bold ? s.menu.bold : fallback, s.menu.body ? s.menu.body : fallback,
@@ -523,7 +526,7 @@ void draw_plugins() {
         return otherwise;
     };
     auto* draw = ImGui::GetBackgroundDrawList();
-    const auto camera = plugin_camera::projector(display.x, display.y);
+    const auto camera = plugin_camera::projector(native_display.x, native_display.y);
     // The fonts' advances for d:measure, again whenever the atlas is new.
     static const void* measured{};
     if (measured != ImGui::GetIO().Fonts) {
@@ -548,13 +551,23 @@ void draw_plugins() {
     const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.25f);
     std::vector<std::string> covering; // plugins over most of the screen, named after the drawing
     for (const auto& layer : *layers) {
+        const auto surface=viewmodel::display_now();
+        const bool on_surface=surface && surface->live && surface->owner==layer.plugin;
+        const auto display=on_surface?ImVec2(static_cast<float>(viewmodel::display_width),static_cast<float>(viewmodel::display_height)):ImGui::GetIO().DisplaySize;
+        const float k=display.y/1080.0f;
+        draw=ImGui::GetBackgroundDrawList();
+        if (on_surface) {
+            surface_draw()=std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());draw=surface_draw().get();
+            draw->_ResetForNewFrame();draw->PushTextureID(ImGui::GetIO().Fonts->TexID);
+            draw->PushClipRect(ImVec2(0,0),display,false);
+        }
         // How far this frame's light may go (the photosensitivity guard, above).
         const auto over = cover(layer, display);
         auto& glare = glares()[layer.plugin];
         const float allowed = std::min(over.light, glare.shown + light_rise_per_second * dt);
         glare.shown = allowed;
         const float dim = over.light > allowed && over.light > 0 ? allowed / over.light : 1.0f;
-        if (over.hidden >= named_cover) covering.push_back(layer.plugin);
+        if (!on_surface && over.hidden >= named_cover) covering.push_back(layer.plugin);
         // The plugin's own fonts (its manifest's "fonts"), each found once a layer. One that cannot
         // be read is none here: its texts are "body"'s, as the plugin measured them.
         std::array<detail::OwnFont*, 8> layer_fonts{};
@@ -709,8 +722,16 @@ void draw_plugins() {
             case Kind::image: {
                 ImVec2 size;
                 if (const auto id = detail::plugin_image(shape.text, size))
+                    if (style.rotation!=0) {
+                        const auto a=at(p[0]),b=at(p[1]);const ImVec2 centre{(a.x+b.x)*.5f,(a.y+b.y)*.5f};
+                        const float angle=style.rotation*.017453292519943295f,cosine_angle=std::cos(angle),sine_angle=std::sin(angle);
+                        const auto rotate=[&](ImVec2 v){const float x=v.x-centre.x,y=v.y-centre.y;return ImVec2(centre.x+x*cosine_angle-y*sine_angle,centre.y+x*sine_angle+y*cosine_angle);};
+                        draw->AddImageQuad(id,rotate(a),rotate(ImVec2(b.x,a.y)),rotate(b),rotate(ImVec2(a.x,b.y)),
+                            ImVec2(style.uv[0],style.uv[1]),ImVec2(style.uv[2],style.uv[1]),ImVec2(style.uv[2],style.uv[3]),ImVec2(style.uv[0],style.uv[3]),style.colour);
+                    } else {
                     draw->AddImageRounded(id, at(p[0]), at(p[1]), ImVec2(style.uv[0], style.uv[1]), ImVec2(style.uv[2], style.uv[3]), style.colour,
                                           style.rounding * k);
+                    }
                 break;
             }
             case Kind::world_image: {
@@ -760,6 +781,7 @@ void draw_plugins() {
             }
         }
         for (; clips > 0; --clips) draw->PopClipRect();
+        if (on_surface) {draw->PopClipRect();draw->PopTextureID();}
     }
     detail::own_fonts_end(); // (the glyphs this frame's texts lacked are asked for)
     // Who is over the screen, on top of anything a plugin draws (they draw behind the overlay's own
@@ -770,11 +792,23 @@ void draw_plugins() {
         const auto line = "Plugin " + names + " is drawing over your screen. Ctrl+Shift+End switches plugins off.";
         auto* top = ImGui::GetForegroundDrawList();
         auto* font = fonts[1];
-        const float size = 18.0f * k, pad = 8.0f * k;
+        const float size = 18.0f * native_scale, pad = 8.0f * native_scale;
         const auto extent = font->CalcTextSizeA(size, FLT_MAX, 0, line.c_str());
-        const ImVec2 min(16.0f * k, display.y - 16.0f * k - extent.y - pad * 2), max(min.x + extent.x + pad * 2, display.y - 16.0f * k);
-        top->AddRectFilled(min, max, IM_COL32(0, 0, 0, 220), 4.0f * k);
+        const ImVec2 min(16.0f * native_scale, native_display.y - 16.0f * native_scale - extent.y - pad * 2), max(min.x + extent.x + pad * 2, native_display.y - 16.0f * native_scale);
+        top->AddRectFilled(min, max, IM_COL32(0, 0, 0, 220), 4.0f * native_scale);
         top->AddText(font, size, ImVec2(min.x + pad, min.y + pad), IM_COL32(255, 255, 255, 255), line.c_str());
     }
+}
+void render_viewmodel_surface(const viewmodel::Target& target) {
+    auto* list=surface_draw().get();if (!list || list->VtxBuffer.empty()) return;
+    ImDrawData data;data.Valid=true;data.DisplayPos=ImVec2(0,0);
+    data.DisplaySize=ImVec2(static_cast<float>(viewmodel::display_width),static_cast<float>(viewmodel::display_height));
+    data.FramebufferScale=ImVec2(1,1);data.AddDrawList(list);
+    D3D12_RESOURCE_BARRIER barrier{};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition={target.buffer,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_RENDER_TARGET};
+    target.commands->ResourceBarrier(1,&barrier);target.commands->OMSetRenderTargets(1,&target.rtv,FALSE,nullptr);
+    // The source texture is SDR even when the spectator uses HDR output.
+    ImGui_ImplDX12_RenderSurfaceDrawData(&data,target.commands);
+    std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);target.commands->ResourceBarrier(1,&barrier);
 }
 }

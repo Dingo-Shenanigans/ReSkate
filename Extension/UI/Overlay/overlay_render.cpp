@@ -422,7 +422,8 @@ bool setup_graphics() {
     ImGui_ImplDX12_InitInfo info;
     info.Device = s.device.Get();
     info.CommandQueue = s.queue.Get();
-    info.NumFramesInFlight = static_cast<int>(description.BufferCount);
+    // A world display can draw its plugin layer before the normal overlay.
+    info.NumFramesInFlight = static_cast<int>(description.BufferCount)*2;
     info.RTVFormat = format;
     info.SrvDescriptorHeap = s.srvs.Get();
     info.LegacySingleSrvCpuDescriptor = s.srvs->GetCPUDescriptorHandleForHeapStart();
@@ -955,6 +956,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
             const auto& fence = state().fence;
             return fence ? fence->GetCompletedValue() : std::uint64_t{0};
         };
+        target.draw_surface_overlay=render_viewmodel_surface;
         (void)viewmodel::record(target);
     }
     if (shader_frame) {

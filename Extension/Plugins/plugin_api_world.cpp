@@ -3626,6 +3626,15 @@ struct WorldApi {
         }
         return 1;
     }
+    // rumble(low, high, milliseconds): a bounded pulse on the local XInput pad.
+    static int input_rumble(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "input", "reskate.input.rumble");
+        const auto low = luaL_checknumber(L, 1), high = luaL_checknumber(L, 2), ms = luaL_checknumber(L, 3);
+        if (!(low >= 0 && low <= 1 && high >= 0 && high <= 1 && ms >= 0 && ms <= 250))
+            luaL_error(L, "rumble motors are 0 to 1 and duration is 0 to 250 ms");
+        return result(L, game_of(plugin).rumble_pad(plugin.id(), static_cast<float>(low), static_cast<float>(high), static_cast<unsigned>(ms)));
+    }
     static int input_capture(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "input", "reskate.input.capture");
@@ -4137,7 +4146,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                {"game", game_current}, {"game_next", game_next}});
     add_functions(L, "progression", {{"get", progress}});
     add_functions(L, "settings", {{"game", setting}, {"names", setting_names}, {"set", setting_set}});
-    add_functions(L, "input", {{"bind", bind}, {"flight", input_flight}, {"gamepad", input_gamepad}, {"joystick", input_joystick}, {"joysticks", input_joysticks}, {"capture", input_capture},
+    add_functions(L, "input", {{"bind", bind}, {"flight", input_flight}, {"gamepad", input_gamepad}, {"joystick", input_joystick}, {"joysticks", input_joysticks}, {"capture", input_capture}, {"rumble", input_rumble},
                                {"write", input_write}, {"hide", input_hide}, {"cursor", input_cursor}, {"text", input_text}});
     add_functions(L, "room", {{"open", room_open}, {"leave", room_leave}, {"state", room_state}, {"show", room_show}, {"place", room_place}});
     add_functions(L, "ui", {{"screen", screen}, {"open", open}, {"close", close}});

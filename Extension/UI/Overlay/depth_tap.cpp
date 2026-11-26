@@ -98,6 +98,8 @@ void tap_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& 
 
 void STDMETHODCALLTYPE hooked_barrier(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
     const auto original = original_barrier.load();
+    if (list && barriers && original)
+        for (UINT i = 0; i < count; ++i) viewmodel::capture_depth(list, barriers[i], original);
     if (tap().on.load(std::memory_order_relaxed) && list && barriers) {
         try {
             for (UINT i = 0; i < count; ++i) tap_barrier(list, barriers[i], original);

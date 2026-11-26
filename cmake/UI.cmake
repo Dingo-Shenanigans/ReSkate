@@ -117,14 +117,18 @@ if(WIN32)
 endif()
 
 # A viewmodel's shader (reskate.viewmodel), the same way: text in the DLL, checked with fxc when there is
-# one. It is short enough for one string literal.
+# one. Split the embedded text to fit MSVC string literal limits.
 set(viewmodel_hlsl_path "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay/viewmodel.hlsl")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${viewmodel_hlsl_path}")
 file(READ "${viewmodel_hlsl_path}" viewmodel_hlsl_source)
 string(LENGTH "${viewmodel_hlsl_source}" viewmodel_hlsl_length)
-if(viewmodel_hlsl_length GREATER 15000)
-    message(FATAL_ERROR "viewmodel.hlsl is longer than one MSVC string literal: split it as the screen look's is")
-endif()
+set(viewmodel_hlsl_chunks "")
+set(viewmodel_hlsl_at 0)
+while(viewmodel_hlsl_at LESS viewmodel_hlsl_length)
+    string(SUBSTRING "${viewmodel_hlsl_source}" ${viewmodel_hlsl_at} 8000 viewmodel_hlsl_chunk)
+    string(APPEND viewmodel_hlsl_chunks "R\"vm_hlsl(${viewmodel_hlsl_chunk})vm_hlsl\"\n")
+    math(EXPR viewmodel_hlsl_at "${viewmodel_hlsl_at} + 8000")
+endwhile()
 configure_file(cmake/templates/viewmodel_hlsl.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/viewmodel_hlsl.h" @ONLY)
 if(WIN32 AND DINGOSDK_FXC)
     set(viewmodel_checked "${CMAKE_CURRENT_BINARY_DIR}/generated/viewmodel.checked")

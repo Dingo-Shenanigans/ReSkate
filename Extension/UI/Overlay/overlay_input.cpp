@@ -502,6 +502,32 @@ void begin_input_access() noexcept { ++detail::overlay_input_access; }
 void end_input_access() noexcept { --detail::overlay_input_access; }
 std::uint64_t controls_touched_at() noexcept { return detail::controls_at.load(std::memory_order_relaxed); }
 void note_joystick(std::uint32_t buttons, const std::array<float, 6>& axes) noexcept { detail::note_pad(5, buttons, axes); }
+int first_xinput_slot() noexcept {
+    const auto slots = xinput_slots().connected.load();
+    for (int i = 0; i < XUSER_MAX_COUNT; ++i) if (slots & (1u << i)) return i;
+    return -1;
+}
+bool set_controller_rumble(int slot, float low, float high) noexcept {
+    if (slot < 0 || slot >= XUSER_MAX_COUNT) return false;
+    using SetState = DWORD (WINAPI*)(DWORD, XINPUT_VIBRATION*);
+    static const auto set_state = []() -> SetState {
+        for (const auto name : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"}) {
+            const auto module = LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!module) continue;
+            const auto entry = GetProcAddress(module, "XInputSetState");
+            if (entry) {
+                SetState fn{};
+                static_assert(sizeof(fn) == sizeof(entry));
+                std::memcpy(&fn, &entry, sizeof(fn));
+                return fn;
+            }
+            FreeLibrary(module);
+        }
+        return nullptr;
+    }();
+    XINPUT_VIBRATION motors{static_cast<WORD>(low * 65535.0f), static_cast<WORD>(high * 65535.0f)};
+    return set_state && set_state(static_cast<DWORD>(slot), &motors) == ERROR_SUCCESS;
+}
 Gamepad read_gamepad(int controller) {
     detail::OverlayInputAccess access;
     auto sample = controller < 0 ? read_controller_sample() : ControllerSample{};
