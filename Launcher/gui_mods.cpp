@@ -1949,7 +1949,7 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
     panel.sizes.clear();
     for (const auto& entry : panel.list.entries) panel.sizes[entry.mod.name] = folder_size(entry.mod.directory);
     read_items_left_out(panel);
-    start_vram_scan(panel);
+    request_vram_scan(panel.vram);
     panel.scanned = true;
     std::erase_if(panel.marked, [&](const std::string& name) {
         return std::none_of(panel.list.entries.begin(), panel.list.entries.end(),

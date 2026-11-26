@@ -112,14 +112,11 @@ void work(ModVramScan& scan, std::vector<Job> jobs, fs::path root) {
 // What a mod takes whatever anyone wears: its map while that is loaded, and what is always loaded.
 std::uint64_t standing(const mods::ModVram& vram) { return vram.level + vram.always; }
 
-} // namespace
-
 void start_vram_scan(ModsPanel& panel) {
     auto& scan = panel.vram;
-    scan.stop = true;
     if (scan.worker.joinable()) scan.worker.join();
     scan.stop = false;
-    scan.interrupted = false;
+    scan.refresh_requested = false;
     std::vector<Job> jobs;
     for (const auto& entry : panel.list.entries) {
         const auto& mod = entry.mod;
@@ -145,25 +142,33 @@ void start_vram_scan(ModsPanel& panel) {
     scan.worker = std::thread(work, std::ref(scan), std::move(jobs), panel.root);
 }
 
+} // namespace
+
+void request_vram_scan(ModVramScan& scan) noexcept {
+    scan.stop = true;
+    scan.refresh_requested = true;
+}
+
 void pump_vram_scan(ModsPanel& panel) {
     auto& scan = panel.vram;
-    {
-        std::lock_guard lock(scan.mutex);
-        for (auto& [name, vram] : scan.done) {
-            scan.known[name] = std::move(vram);
-            if (scan.waiting) --scan.waiting;
-        }
-        scan.done.clear();
+    // Installs can finish in quick succession. Wait for the old scan to exit
+    // and the mod folders to settle before reading the latest list.
+    if (scan.refresh_requested) {
+        if (!scan.running && !panel.installing && !panel.removal.busy) start_vram_scan(panel);
+        return;
     }
-    // Stopped for an install or an uninstall: read again once the folder is still.
-    if (scan.interrupted && !scan.running && !panel.installing && !panel.removal.busy) start_vram_scan(panel);
+    std::lock_guard lock(scan.mutex);
+    for (auto& [name, vram] : scan.done) {
+        scan.known[name] = std::move(vram);
+        if (scan.waiting) --scan.waiting;
+    }
+    scan.done.clear();
 }
 
 void wait_for_vram_scan(ModsPanel& panel) {
     auto& scan = panel.vram;
     if (!scan.running) return;
-    scan.stop = true;
-    scan.interrupted = true;
+    request_vram_scan(scan);
     for (int waited = 0; scan.running && waited < 500; ++waited) Sleep(20);
 }
 
