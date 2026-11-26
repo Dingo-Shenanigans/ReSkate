@@ -700,7 +700,7 @@ struct ModVramScan {
 
     std::thread worker;
     std::atomic<bool> running{}, stop{};
-    std::atomic<bool> interrupted{};  // stopped for an install or uninstall: to be read again
+    std::atomic<bool> refresh_requested{};
     std::mutex mutex;
     std::vector<std::pair<std::string, mods::ModVram>> done;   // worker -> UI, under mutex
 
@@ -940,7 +940,7 @@ void read_items_left_out(ModsPanel& panel);
 // stopped before mods are installed or removed (it holds their files open), and starts again
 // after. A mod's figures (null until it is read, or when it could not be), the most it takes as a
 // row says it ("1.64 GB"; empty when nothing), and the lines that say what of it loads when.
-void start_vram_scan(ModsPanel& panel);
+void request_vram_scan(ModVramScan& scan) noexcept;
 void pump_vram_scan(ModsPanel& panel);
 void wait_for_vram_scan(ModsPanel& panel);
 const mods::ModVram* mod_vram(const ModsPanel& panel, std::string_view name);
