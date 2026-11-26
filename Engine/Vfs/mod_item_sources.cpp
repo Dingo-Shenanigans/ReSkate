@@ -56,14 +56,14 @@ void write_item_sources(const fs::path& file, const std::vector<ItemSource>& sou
     auto temporary = file;
     temporary += L".new";
     {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        std::ofstream output(long_path(temporary), std::ios::binary | std::ios::trunc);
         output.write(text.data(), static_cast<std::streamsize>(text.size()));
         if (!output.flush()) throw std::runtime_error("Cannot write " + path_utf8(temporary));
     }
     std::error_code error;
-    fs::rename(temporary, file, error);
+    fs::rename(long_path(temporary), long_path(file), error);
     if (error) {
-        fs::remove(temporary, error);
+        fs::remove(long_path(temporary), error);
         throw std::runtime_error("Cannot write " + path_utf8(file));
     }
 }

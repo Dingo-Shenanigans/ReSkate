@@ -22,6 +22,7 @@
 // Arguments: <Skate folder> [<folder>]; skipped when the game is not there. With a second
 // argument the two mods of the first case are also left in that folder, stamped for this game,
 // to try a build against in the game itself.
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Resource/binary_bundle.h"
 #include "Engine/Resource/cas_codec.h"
@@ -29,6 +30,7 @@
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/ebx_writer.h"
 #include "Engine/Resource/toc.h"
+#include "Engine/Vfs/game_bundles.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_merge_internal.h"
 
@@ -38,7 +40,10 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <optional>
+#include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace fs = std::filesystem;
 namespace fb = dingosdk::frostbite;
@@ -221,10 +226,10 @@ void write_mod(const fs::path& directory, const CasStore& store, const Game& gam
     }
     files.insert(files.begin(), stored(fb::write_binary_bundle(manifest)));
     const std::vector<fb::TocBundle> bundles{{game.shared.bundle.name, fb::write_bundle_region(files), 1}};
-    fs::create_directories(directory / L"Win32" / fs::path(store.directory(installChunk)));
+    fs::create_directories(long_path(directory / L"Win32" / fs::path(store.directory(installChunk))));
     write_file(directory / L"Win32" / L"items.toc", fb::write_patch_toc(bundles));
     write_file(directory / L"Win32" / fs::path(store.directory(installChunk)) / L"cas_01.cas", archive);
-    fs::copy_file(game.base / L"layout.toc", directory / L"layout.toc", fs::copy_options::overwrite_existing);
+    fs::copy_file(game.base / L"layout.toc", long_path(directory / L"layout.toc"), fs::copy_options::overwrite_existing);
 }
 
 // A Mods folder of its own beside nothing, merged against the installed game.
@@ -236,14 +241,14 @@ struct Merge {
         wchar_t temp[MAX_PATH]{};
         GetTempPathW(MAX_PATH, temp);
         root = fs::path(temp) / ("reskate-item-lists-" + std::to_string(GetCurrentProcessId()) + "-" + name);
-        fs::remove_all(root);
+        fs::remove_all(long_path(root));
         catalog.data_root = game.root;
         catalog.root = root / "Mods";
         catalog.present = true;
     }
     ~Merge() {
         std::error_code ignored;
-        fs::remove_all(root, ignored);
+        fs::remove_all(long_path(root), ignored);
     }
     // Mods are added highest priority first.
     fs::path add(const std::string& name) {
@@ -362,6 +367,26 @@ void different_names_from_two_mods(const Game& game, const CasStore& store) {
     expect(names(list, first) && names(list, second), "different names: the list has both mods' items");
     expect(!noted_part(report, "left out of the list") && !noted_part(report, "share a name"),
            "different names: nothing is reported\n" + describe(report));
+}
+
+// The same two mods in a Mods folder deep enough that the patch's files are past 260 characters,
+// as a temp folder inside another tool's can be: ReSkate Studio's tests, run from its scratch
+// folder, saw the merge fail there three times on 2026-11-18. Every path the merge opens is
+// given in its long form, so the depth makes no difference.
+void a_merge_past_260_characters(const Game& game, const CasStore& store) {
+    std::string deep = "deep";
+    for (int level = 0; level < 6; ++level) deep += "/a-folder-name-that-takes-up-room-" + std::to_string(level);
+    Merge merge(game, deep);
+    const auto first = item_from(game.item, "items/reskate_test/own_first", 0x10);
+    const auto second = item_from(game.item, "items/reskate_test/own_second", 0x20);
+    const auto firstList = list_with(game.list, {first.identity}), secondList = list_with(game.list, {second.identity});
+    write_mod(merge.add("first"), store, game, &firstList, {first});
+    write_mod(merge.add("second"), store, game, &secondList, {second});
+    const auto patch = merge.catalog.root / mods::generated_folder / L"Win32" / L"items.toc";
+    expect(patch.native().size() > 260, "deep: the patch's files are past 260 characters (" + std::to_string(patch.native().size()) + ")");
+    const auto report = mods::merge_mods(merge.catalog);
+    const auto list = merged_list(merge, game, report, "deep", 2);
+    expect(names(list, first) && names(list, second), "deep: the list has both mods' items");
 }
 
 // One mod alone changes the list, beside a mod that ships the bundle with the game's, or as the
@@ -545,6 +570,171 @@ void the_list_other_copies_are_given(const Game& game, const CasStore& store) {
                          "mod's asset of the same name stands in for what they name"),
            "carried list: the merge says which mod's entry was left out\n" + describe(report));
 }
+
+// ---- Mesh variation databases ---------------------------------------------------------------------
+// Every prop mod adds the bundle's mesh variation database under one name, "<bundle>/
+// meshvariationdb_win32", with its own props' entries, and a mesh with no entry is drawn invisible.
+// The merge combines them (Engine/Resource/mesh_variation_merge.h): each mod's entries are in the
+// merged database, with the instances they point at, and where two mods give one mesh different
+// materials the higher mod's entry is kept and the merge says so.
+
+// What the game registers an entry by: its mesh's document and instance, and its two variation hashes.
+using EntryKey = std::tuple<fb::Guid, fb::Guid, std::int64_t, std::int64_t>;
+const fb::ebx::Value::Array& variation_entries(const fb::ebx::Document& database) {
+    const auto* field = database.root()->object->find("Entries");
+    return std::get<fb::ebx::Value::Array>(field->value.data);
+}
+std::int64_t whole(const fb::ebx::Object& object, std::string_view name) {
+    const auto& value = object.find(name)->value.data;
+    if (const auto* number = std::get_if<std::int64_t>(&value)) return *number;
+    return static_cast<std::int64_t>(std::get<std::uint64_t>(value));
+}
+EntryKey entry_key(const fb::ebx::Document& database, const fb::ebx::Value& entry) {
+    const auto& object = *std::get<std::shared_ptr<fb::ebx::Object>>(entry.data);
+    const auto& mesh = std::get<fb::ebx::PointerReference>(object.find("Mesh")->value.data);
+    const auto& import = database.imports.at(static_cast<std::size_t>(mesh.index));
+    return {import.fileGuid, import.classGuid, whole(object, "VariationAssetNameHash"), whole(object, "SubVariationNameHash")};
+}
+std::set<EntryKey> entry_keys(const fb::ebx::Document& database) {
+    std::set<EntryKey> keys;
+    for (const auto& entry : variation_entries(database)) keys.insert(entry_key(database, entry));
+    return keys;
+}
+// The first material of the database's first entry.
+fb::ebx::Object& first_material(fb::ebx::Document& database) {
+    auto& entry = *std::get<std::shared_ptr<fb::ebx::Object>>(
+        std::get<fb::ebx::Value::Array>(database.instances.front().object->fields[1].value.data).front().data);
+    for (auto& field : entry.fields)
+        if (field.name == "Materials")
+            return *std::get<std::shared_ptr<fb::ebx::Object>>(std::get<fb::ebx::Value::Array>(field.value.data).front().data);
+    throw std::runtime_error("a mesh variation entry has no Materials");
+}
+
+// Two of the game's level databases with entries for different meshes, each with a material.
+std::vector<fb::ebx::Document> game_variation_databases(const Game& game) {
+    const vfs::GameData data(game.root);
+    const auto toc = data.read_toc("Win32/levels/game/dingolevel_mpr/dingolevel_mpr.toc");
+    std::vector<fb::ebx::Document> found;
+    std::set<EntryKey> seen;
+    for (const auto& bundle : toc.bundles) {
+        const auto read = data.read_bundle(toc, ascii_lower(bundle.name));
+        if (!read) continue;
+        for (std::size_t index = 0; index < read->manifest.ebx.size(); ++index) {
+            if (!ascii_lower(read->manifest.ebx[index].name).ends_with("/meshvariationdb_win32")) continue;
+            auto document = fb::ebx::read_document(data.read(*read->payload(fb::AssetKind::ebx, index)));
+            if (document.rootType != "MeshVariationDatabase" || variation_entries(document).empty()) continue;
+            const auto keys = entry_keys(document);
+            if (std::ranges::any_of(keys, [&](const EntryKey& key) { return seen.contains(key); })) continue;
+            try { static_cast<void>(first_material(document)); } catch (const std::exception&) { continue; }
+            seen.insert(keys.begin(), keys.end());
+            found.push_back(std::move(document));
+            if (found.size() == 2) return found;
+        }
+    }
+    throw std::runtime_error("the game's dingolevel_mpr has no two mesh variation databases to make prop mods of");
+}
+
+// One of the game's databases as a prop mod adds it to the shared bundle: under the bundle's own
+// database name, with a document guid of its own.
+Item variation_database_from(const fb::ebx::Document& donor, const std::string& name, std::uint8_t seed) {
+    auto database = fb::ebx::detail::clone_document(donor);
+    database.fileGuid = guid(seed);
+    for (auto& field : database.instances.front().object->fields)
+        if (field.name == "Name") field.value.data = name;
+    return {name, {database.fileGuid, database.instances.front().instanceGuid}, fb::ebx::write_document(database)};
+}
+
+// `ownName`: under the bundle's own database name, which the game's shared bundle has a database
+// of its own under; otherwise under one only the mods add, as on a level whose bundle has none
+// (dingolevel_root, where four prop mods each added one, 2026-11-19).
+void prop_mods_each_add_a_variation_database(const Game& game, const CasStore& store,
+                                             const std::vector<fb::ebx::Document>& donors, bool ownName) {
+    const std::string name = std::string(shared_bundle).substr(std::string("win32/").size()) +
+                             (ownName ? "" : "/reskate_test") + "/meshvariationdb_win32";
+    Merge merge(game, ownName ? "variation-databases" : "variation-databases-added");
+    const std::string label = ownName ? "variation databases (the game's too)" : "variation databases (only the mods')";
+    const auto first = variation_database_from(donors[0], name, 0x30);
+    const auto second = variation_database_from(donors[1], name, 0x50);
+    // The lowest mod gives the first mod's first mesh another shader: the first mod is above it.
+    auto recoloured = fb::ebx::detail::clone_document(donors[0]);
+    auto& material = first_material(recoloured);
+    std::int64_t shader{};
+    for (auto& field : material.fields)
+        if (field.name == "SurfaceShaderId") {
+            if (auto* number = std::get_if<std::int64_t>(&field.value.data)) shader = (*number += 1);
+            else if (auto* unsigned_number = std::get_if<std::uint64_t>(&field.value.data))
+                shader = static_cast<std::int64_t>(*unsigned_number += 1);
+        }
+    const auto third = variation_database_from(recoloured, name, 0x70);
+    write_mod(merge.add("props_first"), store, game, nullptr, {first});
+    write_mod(merge.add("props_second"), store, game, nullptr, {second});
+    write_mod(merge.add("props_recoloured"), store, game, nullptr, {third});
+    const auto report = mods::merge_mods(merge.catalog);
+    expect(report.issue.empty() && report.built && report.problems.empty(),
+           label + ": the merge builds the patch and keeps every mod\n" + describe(report));
+    if (!report.built) return;
+    for (const auto& note : report.notes)
+        if (note.find("mesh variation") != std::string::npos || note.find("mesh entry") != std::string::npos)
+            std::cout << label << ": " << note << '\n';
+
+    const auto output = merge.catalog.root / mods::generated_folder;
+    const auto layout = vfs::read_layout(output / L"layout.toc");
+    const CasStore merged(game.base, merge.root / L"unused", layout.root);
+    const auto shared = shared_in(merged, output, game.base, game.root);
+    std::optional<fb::ebx::Document> database;
+    for (std::size_t index = 0; index < shared.listing.manifest.ebx.size(); ++index)
+        if (ascii_lower(shared.listing.manifest.ebx[index].name) == name)
+            database = fb::ebx::read_document(read_asset(merged, output, game.base, shared.listing, index, game.root));
+    expect(database.has_value(), label + ": the merged bundle has " + name);
+    if (!database) return;
+
+    // Every entry of both mods, and of the game's own database where the bundle has one, each once.
+    std::set<EntryKey> gameKeys;
+    for (std::size_t index = 0; index < game.shared.listing.manifest.ebx.size(); ++index)
+        if (ascii_lower(game.shared.listing.manifest.ebx[index].name) == name)
+            gameKeys = entry_keys(fb::ebx::read_document(read_asset(store, game.base, game.base, game.shared.listing, index, game.root)));
+    const auto keys = entry_keys(*database);
+    const auto firstKeys = entry_keys(donors[0]), secondKeys = entry_keys(donors[1]);
+    expect(std::ranges::includes(keys, firstKeys) && std::ranges::includes(keys, secondKeys) && std::ranges::includes(keys, gameKeys),
+           label + ": the merged database has every entry of both mods and of the game's");
+    std::set<EntryKey> all = gameKeys;
+    all.insert(firstKeys.begin(), firstKeys.end());
+    all.insert(secondKeys.begin(), secondKeys.end());
+    expect(variation_entries(*database).size() == all.size(),
+           label + ": the game's " + std::to_string(gameKeys.size()) + " entries and the mods' " +
+           std::to_string(firstKeys.size()) + " + " + std::to_string(secondKeys.size()) + ", each once (" +
+           std::to_string(variation_entries(*database).size()) + ")");
+    // What each entry's materials point at came with it.
+    bool resolved = true;
+    for (const auto& entry : variation_entries(*database)) {
+        const auto& object = *std::get<std::shared_ptr<fb::ebx::Object>>(entry.data);
+        for (const auto& value : std::get<fb::ebx::Value::Array>(object.find("Materials")->value.data)) {
+            const auto& pointer = std::get<fb::ebx::PointerReference>(
+                std::get<std::shared_ptr<fb::ebx::Object>>(value.data)->find("MaterialVariation")->value.data);
+            if (pointer.kind == fb::ebx::PointerKind::null) continue;
+            resolved &= pointer.kind == fb::ebx::PointerKind::internal && pointer.index >= 0 &&
+                        static_cast<std::size_t>(pointer.index) < database->instances.size() &&
+                        database->types.at(static_cast<std::size_t>(database->instances[static_cast<std::size_t>(pointer.index)].descriptor)).name ==
+                            "MeshMaterialVariation";
+        }
+    }
+    expect(resolved, label + ": every material variation an entry names is in the merged database");
+    // The mesh both the first mod and the lowest give: the first mod's materials.
+    const auto clashing = entry_key(donors[0], variation_entries(donors[0]).front());
+    for (const auto& entry : variation_entries(*database)) {
+        if (entry_key(*database, entry) != clashing) continue;
+        const auto& materials = std::get<fb::ebx::Value::Array>(
+            std::get<std::shared_ptr<fb::ebx::Object>>(entry.data)->find("Materials")->value.data);
+        expect(whole(*std::get<std::shared_ptr<fb::ebx::Object>>(materials.front().data), "SurfaceShaderId") != shader,
+               label + ": the mesh two mods give is drawn as the higher mod gives it");
+    }
+    expect(noted_part(report, name + ": combined the mesh variation databases of 3 mods ("),
+           label + ": the merge says it combined them\n" + describe(report));
+    expect(noted_part(report, "props_recoloured: " + name + ": 1 mesh entry(ies) that props_first gives other materials"),
+           label + ": the merge says whose entry for a shared mesh was kept\n" + describe(report));
+    expect(!noted_part(report, "share a name with ones"),
+           label + ": no database is said to be replaced by another\n" + describe(report));
+}
 } // namespace
 
 int main(int argc, char** argv) try {
@@ -559,6 +749,7 @@ int main(int argc, char** argv) try {
     const fs::path keep = argc > 2 ? fs::path(argv[2]) : fs::path{};
     same_name_from_two_mods(game, store, argc > 2 ? &keep : nullptr);
     different_names_from_two_mods(game, store);
+    a_merge_past_260_characters(game, store);
     for (const auto alone : {false, true}) {
         one_mod_changes_the_list(game, store, false, alone);
         one_mod_changes_the_list(game, store, true, alone);
@@ -568,6 +759,9 @@ int main(int argc, char** argv) try {
     values_two_mods_changed(game, store, true);
     a_change_that_does_not_combine(game, store);
     the_list_other_copies_are_given(game, store);
+    const auto donors = game_variation_databases(game);
+    prop_mods_each_add_a_variation_database(game, store, donors, true);
+    prop_mods_each_add_a_variation_database(game, store, donors, false);
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

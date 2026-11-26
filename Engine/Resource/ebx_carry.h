@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace dingosdk::frostbite::ebx::detail {
@@ -29,6 +30,9 @@ public:
     // A reference into another partition is an import: the same (file, class)
     // pair the target already lists is reused, anything new is added.
     std::int32_t import(std::int32_t index);
+    // The row of `to`'s fix-up type list that names the type `from`'s row names: the row `to`
+    // already has, or a new one for a type `to` describes. Nothing for a type it does not.
+    std::optional<std::uint16_t> type_row(std::uint16_t row);
     [[nodiscard]] std::shared_ptr<Object> object(const Object& source);
     [[nodiscard]] Value value(const Value& source);
 

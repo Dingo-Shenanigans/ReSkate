@@ -44,7 +44,7 @@ std::string join(const std::vector<std::string>& parts, const char* separator) {
 // for an earlier build carries that build's number. Empty when unreadable.
 std::string layout_changelist(const fs::path& path) noexcept {
     try {
-        std::ifstream file(path, std::ios::binary);
+        std::ifstream file(long_path(path), std::ios::binary);
         const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(file), {}};
         if (bytes.size() <= native_db::envelope_size) return {};
         const auto root = native_db::read(std::span(bytes).subspan(native_db::envelope_size), "layout.toc",
@@ -94,7 +94,7 @@ bool lists_bundle(const fs::path& mod, const std::vector<std::string>& bundles) 
     for (fs::directory_iterator at(mod / L"Win32", error), end; !error && at != end; at.increment(error))
         if (at->is_regular_file(error) && at->path().extension() == L".toc") lists.push_back(at->path());
     for (const auto& list : lists) {
-        std::ifstream file(list, std::ios::binary);
+        std::ifstream file(long_path(list), std::ios::binary);
         if (!file) continue;
         const auto bytes = ascii_lower(std::string{std::istreambuf_iterator<char>(file), {}});
         for (const auto& bundle : bundles)

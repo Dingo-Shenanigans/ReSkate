@@ -25,7 +25,7 @@ std::string archive_file(std::uint16_t archive) {
 }
 
 Layout read_layout(const fs::path& path) {
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(long_path(path), std::ios::binary);
     Layout layout{{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()}, {}};
     if (layout.buffer.size() <= native_db::envelope_size ||
         std::memcmp(layout.buffer.data(), native_db::magic, sizeof(native_db::magic)))
@@ -108,7 +108,8 @@ void GameArchives::keep_open() { if (!open_) open_ = std::make_shared<Open>(); }
 GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_(std::move(root)) {
     std::map<std::set<std::uint16_t>, std::vector<std::string>> byArchives;
     std::error_code error;
-    const auto win32 = root_ / "Win32";
+    // Gone through in its long form, so a folder past 260 characters is listed too.
+    const auto win32 = long_path(root_ / "Win32", true);
     for (fs::recursive_directory_iterator it(win32, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
         if (ascii_lower(path_utf8(it->path().extension())) != ".cas") continue;
@@ -190,7 +191,7 @@ std::vector<std::byte> GameArchives::read(const fs::path& root, const fb::CasIde
             if (!held) {
                 // Shared in full: the game, a mod manager or this merge may hold, link or
                 // append to the same file meanwhile.
-                held = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                held = CreateFileW(long_path(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
                 if (held == INVALID_HANDLE_VALUE) {
                     open_->files.erase(path.wstring());
@@ -214,7 +215,7 @@ std::vector<std::byte> GameArchives::read(const fs::path& root, const fb::CasIde
     }
 #endif
     const auto path = archive_path();
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(long_path(path), std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     input.seekg(static_cast<std::streamoff>(offset));
     std::vector<std::byte> bytes(size);
@@ -236,7 +237,7 @@ std::optional<std::uint64_t> GameArchives::archive_size(const fs::path& root, co
     const auto known = sizes_.find(path.wstring());
     if (known != sizes_.end()) return known->second;
     std::error_code error;
-    const auto size = fs::file_size(path, error);
+    const auto size = fs::file_size(long_path(path), error);
     const auto result = error ? std::optional<std::uint64_t>{} : std::optional<std::uint64_t>{size};
     sizes_.emplace(path.wstring(), result);
     return result;

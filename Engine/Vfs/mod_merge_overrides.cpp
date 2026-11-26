@@ -1,4 +1,5 @@
 #include "mod_merge_internal.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/ebx_merge.h"
@@ -133,7 +134,7 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
     for (const auto& relative : files.tocs) {
         std::error_code error;
         const auto baseToc = baseRoot / fs::path(relative);
-        if (!fs::is_regular_file(baseToc, error)) {
+        if (!fs::is_regular_file(long_path(baseToc), error)) {
             if (choosing) try {
                 for (const auto& bundle : fb::read_toc(read_file(mod.directory / fs::path(relative))).bundles) refer(bundle);
             } catch (const std::exception&) { unsure = true; }
@@ -678,7 +679,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                 fb::ebx::MergeSummary summary;
                 auto combined = fb::ebx::merge_documents(baseDoc, editDocs, &summary);
                 // Changed values alone are only worth a copy that has all of them.
-                if (!summary.instances && !summary.arrayEntries && !(summary.values && summary.exact())) continue;
+                if (!summary.instances && !summary.arrayEntries && !(summary.changed() && summary.exact())) continue;
                 const auto rebuilt = fb::ebx::write_document(combined);
                 existing->second.sha1 = sha1_of(rebuilt);
                 existing->second.originalSize = rebuilt.size();

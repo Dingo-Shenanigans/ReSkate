@@ -63,10 +63,13 @@ add_library(dingosdk_frostbite STATIC
     Engine/Resource/binary_io.cpp
     Engine/Resource/binary_bundle.cpp
     Engine/Resource/cas_codec.cpp
+    Engine/Resource/ebx_boxed.cpp
     Engine/Resource/ebx_document.cpp
     Engine/Resource/ebx_fixup_repair.cpp
     Engine/Resource/ebx_merge.cpp
     Engine/Resource/material_grid.cpp
+    Engine/Resource/mesh_variation_merge.cpp
+    Engine/Resource/shader_block_depot.cpp
     Engine/Resource/shader_lookup.cpp
     Engine/Resource/bundle_ref_table.cpp
     Engine/Resource/ebx_writer.cpp
@@ -112,6 +115,7 @@ if(WIN32)
         Engine/Vfs/mod_merge_scan.cpp
         Engine/Vfs/mod_merge_scan_cache.cpp
         Engine/Vfs/mod_merge_textures.cpp
+        Engine/Vfs/mod_merge_verify.cpp
         Engine/Vfs/mod_merge_grid.cpp
         Engine/Vfs/mod_merge_load_screens.cpp
         Engine/Vfs/mod_music.cpp

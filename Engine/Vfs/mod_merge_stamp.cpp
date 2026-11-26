@@ -83,7 +83,8 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
         for (const auto& key : mod->items_off) inputs += "item left out " + key + '\n';
         std::vector<fs::path> files;
         std::error_code error;
-        for (fs::recursive_directory_iterator it(mod->directory, error), end; it != end && !error;
+        const auto folder = long_path(mod->directory, true);   // what its files are named against
+        for (fs::recursive_directory_iterator it(folder, error), end; it != end && !error;
              it.increment(error)) {
             if (it->is_regular_file(error) && !error) files.push_back(it->path());
             error.clear();
@@ -91,7 +92,7 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
         if (error) throw std::runtime_error("Cannot list " + path_utf8(mod->directory));
         std::ranges::sort(files);
         for (const auto& file : files)
-            describe(utf8(file.lexically_relative(mod->directory)), file);
+            describe(utf8(file.lexically_relative(folder)), file);
         for (const auto& toc : modFiles.at(mod).tocs) tocs.insert(ascii_lower(toc));
     }
     for (const auto& toc : tocs) {
@@ -113,7 +114,7 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
 // every file it was published with.
 std::optional<MergeReport> previous_merge(const fs::path& output, const std::string& fingerprint) {
     try {
-        std::ifstream input(output / stamp_name, std::ios::binary);
+        std::ifstream input(long_path(output / stamp_name), std::ios::binary);
         std::string line;
         if (!input || !std::getline(input, line) || line != stamp_header) return std::nullopt;
         MergeReport report;
@@ -140,7 +141,7 @@ std::optional<MergeReport> previous_merge(const fs::path& output, const std::str
                 const auto gap = value.find(' ');
                 if (gap == std::string_view::npos) return std::nullopt;
                 std::error_code error;
-                const auto size = fs::file_size(output / from_utf8(value.substr(gap + 1)), error);
+                const auto size = fs::file_size(long_path(output / from_utf8(value.substr(gap + 1))), error);
                 if (error || size != std::stoull(std::string(value.substr(0, gap)))) return std::nullopt;
                 ++files;
             } else if (key == "note") {
@@ -167,11 +168,12 @@ void write_stamp(const fs::path& output, const std::string& fingerprint, const M
     text += "bundles " + std::to_string(report.mergedBundles) + '\n';
     text += "assets " + std::to_string(report.mergedAssets) + '\n';
     std::error_code error;
-    for (fs::recursive_directory_iterator it(output, error), end; it != end && !error; it.increment(error)) {
+    const auto folder = long_path(output, true);
+    for (fs::recursive_directory_iterator it(folder, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
         const auto size = fs::file_size(it->path(), error);
         if (error) throw std::runtime_error("Cannot size " + path_utf8(it->path()));
-        text += "file " + std::to_string(size) + ' ' + utf8(it->path().lexically_relative(output)) + '\n';
+        text += "file " + std::to_string(size) + ' ' + utf8(it->path().lexically_relative(folder)) + '\n';
     }
     if (error) throw std::runtime_error("Cannot list " + path_utf8(output));
     for (auto note : report.notes) {

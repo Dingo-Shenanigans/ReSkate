@@ -1,5 +1,6 @@
 #include "mod_conflicts.h"
 #include "mod_merge_internal.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/ebx_merge.h"
 
@@ -105,7 +106,7 @@ struct ConflictChecker::State {
     static void read_toc(Toc& toc, const fs::path& path) {
         toc.read = true;
         std::error_code error;
-        if (!fs::is_regular_file(path, error)) return;
+        if (!fs::is_regular_file(long_path(path), error)) return;
         toc.document = fb::read_toc(read_file(path));
         for (const auto& bundle : toc.document->bundles) toc.bundles.emplace(ascii_lower(bundle.name), &bundle);
     }
@@ -195,7 +196,7 @@ Rows decide(const Shared& shared, const std::vector<const Mod*>& mods, ConflictC
                     fb::ebx::MergeSummary summary;
                     (void)fb::ebx::merge_documents(base, edits, &summary);
                     uncombinable = summary.dropped.empty() && !summary.instances && !summary.arrayEntries &&
-                                   (!summary.values || !summary.exact());
+                                   (!summary.changed() || !summary.exact());
                 }
             } catch (const std::exception&) {
                 uncombinable = true;

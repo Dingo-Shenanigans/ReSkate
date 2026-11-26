@@ -1,4 +1,5 @@
 #include "mod_merge_internal.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <Windows.h>
 
@@ -25,7 +26,7 @@ std::vector<std::uint32_t> numbers(const std::string& text) {
 ScanCache::ScanCache(fs::path file, std::map<std::string, std::string, std::less<>> fingerprints) noexcept
     : file_(std::move(file)), fingerprints_(std::move(fingerprints)) {
     try {
-        std::ifstream in(file_, std::ios::binary);
+        std::ifstream in(long_path(file_), std::ios::binary);
         std::string line;
         if (!in || !std::getline(in, line)) return;
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -97,7 +98,7 @@ void ScanCache::save() const noexcept {
         std::lock_guard lock(mutex_);
         const auto temporary = fs::path(file_).concat(L".new");
         {
-            std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+            std::ofstream out(long_path(temporary), std::ios::binary | std::ios::trunc);
             out << scan_header << ' ' << sdk_stamp() << '\n';
             const auto list = [&](const std::vector<std::uint32_t>& values) {
                 std::string text;
@@ -125,7 +126,7 @@ void ScanCache::save() const noexcept {
             }
             if (!out.flush()) return;
         }
-        MoveFileExW(temporary.c_str(), file_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        MoveFileExW(long_path(temporary).c_str(), long_path(file_).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     } catch (...) {}
 }
 

@@ -124,7 +124,7 @@ void scan_mods(const std::vector<std::pair<const Mod*, std::string>>& tocs, cons
             auto name = path_utf8(mod->directory.filename());
             if (scans.covers(name, ascii_lower(relative))) continue;
             std::error_code error;
-            const auto bytes = fs::file_size(mod->directory / fs::path(relative), error);
+            const auto bytes = fs::file_size(long_path(mod->directory / fs::path(relative)), error);
             tasks.push_back(std::make_unique<Task>());
             tasks.back()->mod = mod;
             tasks.back()->relative = relative;

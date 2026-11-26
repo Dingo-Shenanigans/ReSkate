@@ -9,6 +9,7 @@
 #include <map>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -660,13 +661,29 @@ private:
         writer.u32(boxedOffset_);
         writer.u32(stringOffset);
 
+        std::vector<std::uint32_t> trailing;
+        // A listed reference is found again by the value it refers to: a merge can add boxed
+        // references (an instance carried from a mod's copy) and moves instances about, so the
+        // place of a slot among the others says nothing. Each boxed value has one reference.
+        if (!document_.payload.empty()) {
+            std::set<std::int64_t> listed;
+            for (const auto old : document_.boxedReferenceOffsets) {
+                if (static_cast<std::size_t>(old) + 16 > document_.payload.size()) continue;
+                std::int64_t displacement{};
+                std::memcpy(&displacement, document_.payload.data() + old + 8, sizeof(displacement));
+                listed.insert(static_cast<std::int64_t>(old) + 8 + displacement);
+            }
+            for (const auto& pending : boxesPending_)
+                if (listed.contains(pending.value.dataOffset)) trailing.push_back(pending.slot);
+            write_table(writer, std::move(trailing));
+            return writer.take();
+        }
         auto oldSlots = document_.boxedValueSlots;
         std::vector<std::uint32_t> newSlots;
         newSlots.reserve(boxesPending_.size());
         for (const auto& pending : boxesPending_) newSlots.push_back(pending.slot);
         std::ranges::sort(oldSlots);
         std::ranges::sort(newSlots);
-        std::vector<std::uint32_t> trailing;
         for (const auto old : document_.boxedReferenceOffsets) {
             const auto found = std::ranges::lower_bound(oldSlots, old);
             if (found == oldSlots.end() || *found != old) continue;

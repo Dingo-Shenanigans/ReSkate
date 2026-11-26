@@ -50,7 +50,7 @@ GameData::GameData(fs::path gameRoot)
 
 GameData::GameData(fs::path gameRoot, const fs::path& patchRoot) : GameData(std::move(gameRoot)) {
     std::error_code error;
-    if (patchRoot.empty() || !fs::is_regular_file(patchRoot / "layout.toc", error)) return;
+    if (patchRoot.empty() || !fs::is_regular_file(long_path(patchRoot / "layout.toc"), error)) return;
     patch_.emplace(patchRoot, read_layout(patchRoot / "layout.toc").root);
     patchRoot_ = patchRoot;
 }
@@ -63,11 +63,11 @@ fb::TocDocument GameData::read_toc(std::string_view relative) const {
     auto path = gameRoot_ / "Data" / fs::path(relative);
     if (patch_) {
         std::error_code error;
-        if (const auto patched = patchRoot_ / fs::path(relative); fs::is_regular_file(patched, error)) path = patched;
+        if (const auto patched = patchRoot_ / fs::path(relative); fs::is_regular_file(long_path(patched), error)) path = patched;
     }
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(long_path(path), std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
-    std::vector<std::byte> bytes(static_cast<std::size_t>(fs::file_size(path)));
+    std::vector<std::byte> bytes(static_cast<std::size_t>(fs::file_size(long_path(path))));
     if (!input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
         throw std::runtime_error("Cannot read " + path_utf8(path));
     return fb::read_toc(bytes);

@@ -4,6 +4,7 @@
 #include "content_catalogs.h"
 #include "mod_item_sources.h"
 #include "mod_merge_internal.h"
+#include "mod_merge_verify.h"
 #include "mod_conflicts.h"
 #include "mod_store_copies.h"
 #include "native_db.h"
@@ -20,6 +21,7 @@
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -117,9 +119,9 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         // A disabled mod is no part of it: nothing of one is in the patch.
         const auto fingerprint = merge_fingerprint(catalog, mods, modFiles, storeKnown);
         if (options.live) {
-            fs::remove(output / stamp_file, error);
+            fs::remove(long_path(output / stamp_file), error);
         } else if (auto previous = previous_merge(output, fingerprint);
-                   previous && (!storeKnown || fs::exists(output / item_sources_file, error))) {
+                   previous && (!storeKnown || fs::exists(long_path(output / item_sources_file), error))) {
             // (A patch from before items were traced to their mods is built again, once.)
             return std::move(*previous);
         }
@@ -173,7 +175,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 if (!source.keys.empty()) itemSources->push_back(std::move(source));
             }
         }
-        if (!options.live) fs::remove_all(output, error);
+        if (!options.live) fs::remove_all(long_path(output, true), error);
         lap("checking the mods");
 
         // Progress: each mod's archives, the material grid, a live merge's load
@@ -313,13 +315,13 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                     auto directory = ascii_lower(path.parent_path().generic_string());
                     if (directory.starts_with("win32/")) directory.erase(0, 6);
                     const auto target = inside(output, path.parent_path() / archive_file(manifestArchive));
-                    if (!fs::exists(target, error))
+                    if (!fs::exists(long_path(target), error))
                         throw std::runtime_error(mod->name + " needs a restart: the patch has no archive 1 in " + directory);
                     // Checked before anything is appended: past 4 GB the mod's
                     // payloads could not be addressed, and the next launch
                     // gives it an archive of its own anyway.
-                    const auto held = fs::file_size(target, error);
-                    const auto added = error ? std::uintmax_t{} : fs::file_size(mod->directory / path, error);
+                    const auto held = fs::file_size(long_path(target), error);
+                    const auto added = error ? std::uintmax_t{} : fs::file_size(long_path(mod->directory / path), error);
                     if (error || held + added > std::numeric_limits<std::uint32_t>::max())
                         throw std::runtime_error(mod->name + " needs a restart: the patch's archive 1 in " + directory +
                                                  " has no room left for it while the game runs");
@@ -395,8 +397,8 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
             for (const auto& [directory, declared] : declaredIn) {
                 if (!declared.contains(manifestArchive)) continue;
                 const auto path = inside(output, fs::path(L"Win32") / fs::path(directory) / archive_file(manifestArchive));
-                if (fs::exists(path, error)) continue;
-                fs::create_directories(path.parent_path(), error);
+                if (fs::exists(long_path(path), error)) continue;
+                fs::create_directories(long_path(path.parent_path()), error);
                 write_file(path, {});
             }
         lap("linking");
@@ -423,7 +425,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         // Unchanged since the root was last written (only maps the game has
         // loaded enabled or disabled): the file stays, byte for byte.
         const bool keepRoot = options.live && rootNames == record.root && !rootNames.empty() &&
-                              fs::exists(output / fs::path(root_level), error);
+                              fs::exists(long_path(output / fs::path(root_level)), error);
         record.root = rootNames;
         // Without steps of their own, the material grid and the asset overrides showed
         // the last "Linking" for as long as they ran
@@ -677,7 +679,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
             if (options.live)
                 for (const auto& previous : record.tocs)
                     if (!written.contains(ascii_lower(previous)) && [&] {
-                            try { return fs::remove(inside(output, fs::path(previous)), error); } catch (const std::exception&) { return false; }
+                            try { return fs::remove(long_path(inside(output, fs::path(previous))), error); } catch (const std::exception&) { return false; }
                         }())
                         report.removed_tocs.push_back(previous);
             record.tocs = superbundles;
@@ -712,6 +714,46 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
             write_file(output / L"layout.toc",
                        std::span<const std::byte>(reinterpret_cast<const std::byte*>(file.data()), file.size()));
 
+            // The patch read back as the game reads it, against the rules a built mod is held
+            // to (mod_merge_verify.h): what is broken is named with the mod whose archive holds
+            // it, before the game meets it. Before the stamp, which keeps the notes.
+            advance("Checking the merged patch");
+            const auto checked = check_patch(gameRoot, output, superbundles, [&](const fb::BundleFileInfo& payload) -> std::string {
+                if (const auto* directory = store.find_directory(payload.location.installChunk))
+                    for (const auto& [mod, placement] : placements) {
+                        auto archive = payload.location.archive;
+                        auto offset = payload.offset;
+                        if (unshift(placement, *directory, archive, offset)) return mod->name;
+                    }
+                return "the merge";
+            });
+            // One line for each mod and kind of problem (its words without their numbers), with
+            // how many assets have it and the first of them.
+            struct Seen {
+                std::size_t count{};
+                const PatchCheck::Finding* first{};
+            };
+            std::map<std::pair<std::string, std::string>, Seen> kinds;
+            for (const auto& finding : checked.findings) {
+                std::string kind;
+                for (const auto character : finding.what)
+                    if (!(character >= '0' && character <= '9')) kind += character;
+                auto& seen = kinds[{finding.owner, kind}];
+                if (!seen.count++) seen.first = &finding;
+            }
+            for (const auto& [key, seen] : kinds)
+                report.notes.push_back(key.first + ": " + seen.first->bundle + ": " + seen.first->asset + ": " + seen.first->what +
+                                       (seen.count > 1 ? " (and " + std::to_string(seen.count - 1) + " more asset(s) like it)" : "") +
+                                       " (format check of the merged patch)");
+            char took[32]{};
+            std::snprintf(took, sizeof(took), "%.1f", checked.seconds);
+            report.notes.push_back("Format check of the merged patch: " + std::to_string(checked.documents) + " document(s), " +
+                                   std::to_string(checked.textures) + " texture(s), " + std::to_string(checked.meshes) + " mesh(es), " +
+                                   std::to_string(checked.sounds) + " sound(s) and " + std::to_string(checked.chunkLists) +
+                                   " chunk list(s) read back in " + took + " s, " + std::to_string(checked.findings.size()) +
+                                   " problem(s)");
+            lap("format check");
+
             // The patch is complete without its stamp; lacking one only means the
             // next launch builds it again.
             try {
@@ -740,11 +782,11 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         report.issue = failure.what();
         // A live merge leaves the running patch alone: the game is reading it.
         std::error_code error;
-        if (!options.live) fs::remove_all(supplied.root / generated_folder, error);
+        if (!options.live) fs::remove_all(long_path(supplied.root / generated_folder, true), error);
     } catch (...) {
         report.issue = "The mod merge failed";
         std::error_code error;
-        if (!options.live) fs::remove_all(supplied.root / generated_folder, error);
+        if (!options.live) fs::remove_all(long_path(supplied.root / generated_folder, true), error);
     }
     return report;
 }

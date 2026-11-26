@@ -150,7 +150,7 @@ private:
 // Nothing when the file is missing, cannot be read or was kept for other grids.
 std::optional<KeptGrid> read_kept_grid(const fs::path& file, std::string_view key) noexcept {
     try {
-        std::ifstream input(file, std::ios::binary);
+        std::ifstream input(long_path(file), std::ios::binary);
         if (!input) return std::nullopt;
         const std::string bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
         Reader reader(bytes);

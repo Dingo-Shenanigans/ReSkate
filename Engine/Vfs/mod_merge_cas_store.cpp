@@ -53,11 +53,11 @@ fs::path CasStore::archive_path(std::uint32_t installChunk, std::uint16_t archiv
 std::uint64_t CasStore::append(const fs::path& path, std::span<const std::byte> encoded) {
     auto& offset = offsets_[path.wstring()];
     if (!offset) {
-        fs::create_directories(path.parent_path());
+        fs::create_directories(long_path(path.parent_path()));
         forget(path); // unshare may put a private copy in its place
         unshare(path);
         std::error_code error;
-        const auto existing = fs::file_size(path, error);
+        const auto existing = fs::file_size(long_path(path), error);
         if (!error) offset = existing;
     }
     // A placement holds a 32-bit offset; one past it would wrap round and
@@ -66,7 +66,7 @@ std::uint64_t CasStore::append(const fs::path& path, std::span<const std::byte> 
         throw std::runtime_error("The merged patch's own archive " + path_utf8(path) +
                                  " is full (4 GB); restart Skate so it is built again");
     auto& out = writers_->files[path.wstring()];
-    if (!out.is_open()) out.open(path, std::ios::binary | std::ios::app);
+    if (!out.is_open()) out.open(long_path(path), std::ios::binary | std::ios::app);
     if (!out || !out.write(reinterpret_cast<const char*>(encoded.data()),
                            static_cast<std::streamsize>(encoded.size())))
         throw std::runtime_error("Cannot append to " + path_utf8(path));

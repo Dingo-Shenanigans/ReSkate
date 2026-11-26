@@ -31,7 +31,7 @@ void run_on_threads(std::size_t threads, bool background, const std::function<vo
 }
 
 std::vector<std::byte> read_file(const fs::path& path) {
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    std::ifstream input(long_path(path), std::ios::binary | std::ios::ate);
     if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     const auto length = input.tellg();
     if (length < 0 || static_cast<std::uint64_t>(length) > maximumTocBytes)
@@ -45,15 +45,16 @@ std::vector<std::byte> read_file(const fs::path& path) {
 }
 
 void write_file(const fs::path& path, std::span<const std::byte> bytes) {
-    fs::create_directories(path.parent_path());
-    const auto temporary = fs::path(path.wstring() + L".tmp");
+    fs::create_directories(long_path(path.parent_path()));
+    const auto target = long_path(path);
+    const auto temporary = long_path(fs::path(path.wstring() + L".tmp"));
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output || !output.write(reinterpret_cast<const char*>(bytes.data()),
                                      static_cast<std::streamsize>(bytes.size())) || !output.flush()) // ~ofstream ignores a failed flush
             throw std::runtime_error("Cannot write " + path_utf8(temporary));
     }
-    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const auto error = GetLastError();
         DeleteFileW(temporary.c_str());
         throw std::runtime_error("Cannot publish " + path_utf8(path) +
@@ -64,7 +65,8 @@ void write_file(const fs::path& path, std::span<const std::byte> bytes) {
 // A mod's archive is hard linked into the patch, so appending to it would write
 // straight into the mod's own folder. Anything the merge adds to an archive
 // therefore gives it a private copy first.
-void unshare(const fs::path& path) {
+void unshare(const fs::path& shown) {
+    const auto path = long_path(shown);
     const auto handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return;
@@ -72,30 +74,30 @@ void unshare(const fs::path& path) {
     const auto known = GetFileInformationByHandle(handle, &information) != FALSE;
     CloseHandle(handle);
     if (!known || information.nNumberOfLinks <= 1) return;
-    const auto temporary = fs::path(path.wstring() + L".unshared");
+    const auto temporary = long_path(fs::path(shown.wstring() + L".unshared"));
     std::error_code error;
     fs::copy_file(path, temporary, fs::copy_options::overwrite_existing, error);
-    if (error) throw std::runtime_error("Cannot give " + path_utf8(path) + " a private copy: " +
+    if (error) throw std::runtime_error("Cannot give " + path_utf8(shown) + " a private copy: " +
                                         error.message());
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         const auto failure = GetLastError();
         DeleteFileW(temporary.c_str());
-        throw std::runtime_error("Cannot replace the shared " + path_utf8(path) +
+        throw std::runtime_error("Cannot replace the shared " + path_utf8(shown) +
                                  " (Windows error " + std::to_string(failure) + ")");
     }
 }
 
 std::uint64_t append_file(const fs::path& from, const fs::path& to) {
-    fs::create_directories(to.parent_path());
+    fs::create_directories(long_path(to.parent_path()));
     unshare(to);
-    std::ifstream input(from, std::ios::binary);
+    std::ifstream input(long_path(from), std::ios::binary);
     if (!input) throw std::runtime_error("Cannot read " + path_utf8(from));
     // tellp() on a stream opened for append reads 0 until the first write, so
     // the block's start comes from the file itself.
     std::error_code error;
-    const auto existing = fs::file_size(to, error);
+    const auto existing = fs::file_size(long_path(to), error);
     const auto start = error ? std::uint64_t{} : existing;
-    std::ofstream output(to, std::ios::binary | std::ios::app);
+    std::ofstream output(long_path(to), std::ios::binary | std::ios::app);
     if (!output) throw std::runtime_error("Cannot append to " + path_utf8(to));
     // A megabyte of stack is a stack overflow; the copy buffer lives on the heap.
     std::vector<char> buffer(1 << 20);
@@ -117,18 +119,21 @@ fs::path inside(const fs::path& output, const fs::path& relative) {
 
 // Hard link when the volume allows it, so a 400 MB archive costs nothing.
 void link_or_copy(const fs::path& from, const fs::path& to) {
-    fs::create_directories(to.parent_path());
+    fs::create_directories(long_path(to.parent_path()));
     std::error_code error;
-    fs::remove(to, error);
-    if (CreateHardLinkW(to.c_str(), from.c_str(), nullptr)) return;
-    fs::copy_file(from, to, fs::copy_options::overwrite_existing, error);
+    const auto source = long_path(from), target = long_path(to);
+    fs::remove(target, error);
+    if (CreateHardLinkW(target.c_str(), source.c_str(), nullptr)) return;
+    fs::copy_file(source, target, fs::copy_options::overwrite_existing, error);
     if (error) throw std::runtime_error("Cannot place " + path_utf8(to) + ": " + error.message());
 }
 
 RelativeFiles scan(const fs::path& directory) {
     RelativeFiles result;
     std::error_code error;
-    const auto root = directory / L"Win32";
+    // Iterated in its long form, so the entries come back in it too; their place under Win32
+    // is taken against that.
+    const auto root = long_path(directory / L"Win32", true);
     if (!fs::is_directory(root, error) || error) return result;
     for (fs::recursive_directory_iterator it(root, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
@@ -136,8 +141,9 @@ RelativeFiles scan(const fs::path& directory) {
         // Lexically, as the folder is laid out: fs::relative resolves links, and a Win32 (or a
         // folder in it) that is a junction elsewhere would come out as ../../.., a path the merge
         // then reads the game's TOC from and writes its own copies to outside the patch folder.
-        const auto relative = ascii_path(it->path().lexically_relative(directory));
-        if (relative.empty() || relative.starts_with("../")) continue;
+        const auto within = ascii_path(it->path().lexically_relative(root));
+        if (within.empty() || within.starts_with("../") || within == ".") continue;
+        const auto relative = "Win32/" + within;
         const auto extension = ascii_lower(ascii_path(it->path().extension()));
         if (extension == ".toc") result.tocs.push_back(relative);
         else if (extension == ".cas") result.archives.push_back(relative);
@@ -187,7 +193,7 @@ EbxRepair repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& a
 
 PlacementRecord read_placements(const fs::path& file) {
     PlacementRecord record;
-    std::ifstream input(file, std::ios::binary);
+    std::ifstream input(long_path(file), std::ios::binary);
     if (!input) throw std::runtime_error("The launch's archive placements are missing; restart the game to merge mods");
     const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     const auto root = Json::parse(text);
@@ -249,7 +255,7 @@ namespace dingosdk::mods {
 std::map<std::string, std::uint64_t> read_map_meshes(const std::filesystem::path& file) {
     std::map<std::string, std::uint64_t> meshes;
     try {
-        std::ifstream input(file, std::ios::binary);
+        std::ifstream input(long_path(file), std::ios::binary);
         if (!input) return meshes;
         const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
         const auto root = Json::parse(text);

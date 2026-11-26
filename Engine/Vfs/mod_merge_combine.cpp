@@ -6,13 +6,17 @@
 #include "Engine/Resource/bundle_ref_table.h"
 #include "Engine/Resource/ebx_merge.h"
 #include "Engine/Resource/ebx_writer.h"
+#include "Engine/Resource/mesh_variation_merge.h"
+#include "Engine/Resource/shader_block_depot.h"
 #include "Engine/Resource/shader_lookup.h"
 #include "Engine/Core/Platform/path_text.h"
 
 #include <memory>
 #include <algorithm>
 #include <functional>
+#include <cstdio>
 #include <map>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -457,7 +461,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     std::map<std::string, fb::TocDocument, std::less<>> baseHolder;
     const fb::TocDocument* base{};
     std::error_code error;
-    if (fs::is_regular_file(baseToc, error) && !error) {
+    if (fs::is_regular_file(long_path(baseToc), error) && !error) {
         baseHolder.emplace(relative, fb::read_toc(read_file(baseToc)));
         base = &baseHolder.at(relative);
     }
@@ -1147,8 +1151,11 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 if (entry.asset.kind != fb::AssetKind::chunk && !rewritten && previous.mod &&
                     previous.mod != owner && previous.asset.sha1 != entry.asset.sha1 &&
                     !known.shipped) {
-                    auto& [count, example] = replaced[*previous.mod];
-                    if (!count++) example = entry.asset.name;
+                    // (Mesh variation databases are combined further down, not replaced.)
+                    if (entry.asset.kind != fb::AssetKind::ebx || !fb::ebx::variation_database_name(entry.asset.name)) {
+                        auto& [count, example] = replaced[*previous.mod];
+                        if (!count++) example = entry.asset.name;
+                    }
                     state.displaced.emplace_back(entry.slot, previous.asset.sha1);
                 }
                 // Whichever version is kept, it is still the chunk the game lists there.
@@ -1188,6 +1195,70 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     {gameRoot});
             };
             HeldAssets held(state, decode);
+            // The mesh variation databases mods give one name in this bundle, combined entry by
+            // entry; false when it is not one or fewer than two mods changed it, for the rest of
+            // the merge to treat as any other document.
+            const auto combine_variations = [&](Asset& entry, const auto& copies, const Contribution* baseCopy,
+                                                const auto& read) {
+                // One copy per content, the last absorbed (the highest mod's) of those alike.
+                std::vector<const Contribution*> mods;
+                for (const auto& contribution : copies) {
+                    if (contribution.base || (baseCopy && contribution.sha1 == baseCopy->sha1)) continue;
+                    std::erase_if(mods, [&](const Contribution* other) { return other->sha1 == contribution.sha1; });
+                    mods.push_back(&contribution);
+                }
+                if (mods.size() < 2) return false;
+                const auto mod_of = [](const Contribution* copy) { return path_utf8(copy->root->filename()); };
+                try {
+                    std::optional<fb::ebx::Document> game;
+                    if (baseCopy) game = fb::ebx::read_document(read(*baseCopy));
+                    std::vector<fb::ebx::Document> documents;
+                    for (const auto* copy : mods) documents.push_back(fb::ebx::read_document(read(*copy)));
+                    if ((game && !fb::ebx::variation_database(*game)) ||
+                        !std::ranges::all_of(documents, [](const fb::ebx::Document& document) {
+                            return fb::ebx::variation_database(document); }))
+                        return false;
+                    std::vector<const fb::ebx::Document*> pointers;
+                    for (const auto& document : documents) pointers.push_back(&document);
+                    const auto merged = fb::ebx::merge_variation_databases(game ? &*game : nullptr, pointers);
+                    for (const auto& left : merged.left)
+                        report.notes.push_back(mod_of(mods[left.copy]) + ": " + entry.asset.name +
+                            ": its mesh entries could not be put into the merged database (" + left.why +
+                            "), so its props are drawn invisible");
+                    // Whose props draw with another mod's materials: one entry per mesh to the game.
+                    std::map<std::pair<std::size_t, std::size_t>, std::pair<std::size_t, std::string>> clashes;
+                    for (const auto& clash : merged.clashes) {
+                        auto& [count, example] = clashes[{clash.lost, clash.kept}];
+                        if (!count++) example = clash.mesh;
+                    }
+                    for (const auto& [pair, clash] : clashes)
+                        report.notes.push_back(mod_of(mods[pair.first]) + ": " + entry.asset.name + ": " +
+                            std::to_string(clash.first) + " mesh entry(ies) that " + mod_of(mods[pair.second]) +
+                            " gives other materials, e.g. the mesh " + clash.second + "; the merged database keeps " +
+                            mod_of(mods[pair.second]) + "'s");
+                    auto rebuilt = fb::ebx::write_document(merged.document);
+                    if (auto repaired = fb::ebx::repair_type_fixups(rebuilt)) rebuilt = std::move(repaired->bytes);
+                    const auto placement = store.write(state.manifestChunk, manifestArchive, fb::encode_cas(rebuilt, {gameRoot}));
+                    entry.file = placement;
+                    entry.asset.sha1 = sha1_of(rebuilt);
+                    entry.asset.originalSize = rebuilt.size();
+                    used.emplace(placement.location.installChunk, placement.location.archive);
+                    std::string names;
+                    for (const auto* copy : mods) names += (names.empty() ? "" : ", ") + mod_of(copy);
+                    report.notes.push_back(entry.asset.name + ": combined the mesh variation databases of " +
+                        std::to_string(mods.size()) + " mods (" + names + "): " + std::to_string(merged.entries) +
+                        " mesh entries, " + std::to_string(merged.added) + " brought in from " +
+                        (game ? "the mods" : "mods below the highest") +
+                        (game ? ", " + std::to_string(merged.changed) + " of the game's changed" : std::string()) +
+                        (merged.clashes.empty() ? std::string() : ", " + std::to_string(merged.clashes.size()) + " disagreed"));
+                    ++report.mergedAssets;
+                } catch (const std::exception& failure) {
+                    report.notes.push_back(entry.asset.name + ": kept " + (entry.mod ? *entry.mod + "'s" : std::string("one mod's")) +
+                        " mesh variation database whole, the others could not be combined with it (" + failure.what() +
+                        "); the other mods' props are drawn invisible");
+                }
+                return true;
+            };
             // Two mods rewriting one EBX asset is the case layering can never
             // answer: whichever copy wins, the other mod's additions are gone.
             // Combining the documents is the only shape that keeps both.
@@ -1200,12 +1271,21 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 // other mods' items pointing at presets the game cannot find.
                 const auto refTable = entry.asset.kind == fb::AssetKind::resource &&
                     fb::bundle_ref::is_table(entry.asset.name);
-                if (entry.asset.kind != fb::AssetKind::ebx && !shaderTable && !refTable) continue;
+                // A material key resolves only when a depot of its bundle has its row: mods that
+                // each add materials to one of the game's depots need every one of their rows.
+                const auto depot = entry.asset.kind == fb::AssetKind::resource &&
+                    entry.asset.resourceType == fb::shader_depot::resourceType;
+                if (entry.asset.kind != fb::AssetKind::ebx && !shaderTable && !refTable && !depot) continue;
                 const auto& copies = state.slots[entry.slot].history;
                 if (copies.empty()) continue;
                 const Contribution* baseCopy{};
                 for (const auto& contribution : copies)
                     if (contribution.base) { baseCopy = &contribution; break; }
+                // A level's mesh variation database: every prop mod adds one under the same name,
+                // and a mesh without an entry in it is drawn invisible (mesh_variation_merge.h).
+                if (entry.asset.kind == fb::AssetKind::ebx && fb::ebx::variation_database_name(entry.asset.name) &&
+                    combine_variations(entry, copies, baseCopy, decode))
+                    continue;
                 if (!baseCopy) continue;
                 // Both mods rebuild the whole bundle, so only the assets whose
                 // content actually moved away from the base are contested.
@@ -1251,6 +1331,36 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                             report.notes.push_back(path_utf8(edits[index]->root->filename()) + ": " +
                                 std::to_string(clash.first) + " preset(s) share a short name with another mod's, e.g. " +
                                 clash.second + "; they are registered by their full path only");
+                    } else if (depot) {
+                        std::vector<fb::shader_depot::Resource> depots;
+                        for (std::size_t index = 0; index < editBytes.size(); ++index)
+                            depots.push_back({editBytes[index], edits[index]->resourceMeta});
+                        const auto table = fb::shader_depot::merge({baseBytes, baseCopy->resourceMeta}, depots);
+                        if (!table.added && !table.changed && table.clashes.empty()) continue;
+                        rebuilt = table.depot.resource;
+                        rebuiltMeta = table.depot.resourceMeta;
+                        what = std::to_string(table.added) + " material row(s) added, " + std::to_string(table.changed) +
+                               " of the game's changed";
+                        if (!table.clashes.empty()) what += ", " + std::to_string(table.clashes.size()) + " disagreed";
+                        const auto mod_name = [&](std::size_t index) { return path_utf8(edits[index]->root->filename()); };
+                        // Whose materials draw with another mod's parameters: the key is one key to the game.
+                        std::map<std::pair<std::size_t, std::size_t>, std::pair<std::size_t, std::uint64_t>> clashes;
+                        for (const auto& clash : table.clashes) {
+                            auto& [count, example] = clashes[{clash.earlier, clash.later}];
+                            if (!count++) example = clash.key;
+                        }
+                        for (const auto& [pair, clash] : clashes) {
+                            char key[19]{};
+                            std::snprintf(key, sizeof(key), "0x%016llx", static_cast<unsigned long long>(clash.second));
+                            report.notes.push_back(mod_name(pair.first) + ": " + entry.asset.name + ": " + std::to_string(clash.first) +
+                                " material key(s) that " + mod_name(pair.second) + " gives other parameters, e.g. " + key +
+                                "; the merged depot keeps " + mod_name(pair.second) + "'s, and " + mod_name(pair.first) +
+                                "'s materials of those keys draw with them");
+                            conflict(report, mod_name(pair.second), mod_name(pair.first), entry.asset.name);
+                        }
+                        if (table.identityClashes)
+                            report.notes.push_back(entry.asset.name + ": " + std::to_string(table.identityClashes) +
+                                " parameter block(s) of different content share an identity; the game keeps the first it loads");
                     } else if (shaderTable) {
                         // Texture rows use the stock union. Program rows must
                         // address the graph already selected for this bundle.
@@ -1425,7 +1535,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                             // Values changed in place combine; when that is not all of
                             // some mod's change, the copy already kept stays whole, and
                             // the others' changes to it are not in the game.
-                            if (!summary.values || !summary.exact()) {
+                            if (!summary.changed() || !summary.exact()) {
                                 std::set<std::string> others;
                                 for (std::size_t index = 0; index < edits.size(); ++index)
                                     if (edits[index]->sha1 != entry.asset.sha1) others.insert(mod_of(index));
@@ -1446,6 +1556,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         what = std::to_string(summary.instances) + " instance(s), " +
                                std::to_string(summary.arrayEntries) + " list entries";
                         if (summary.values) what += ", " + std::to_string(summary.values) + " changed value(s)";
+                        if (summary.entries) what += ", " + std::to_string(summary.entries) + " entries put into or taken out of inner lists";
                         if (summary.contested) what += ", " + std::to_string(summary.contested) + " disagreed";
                         if (summary.repeated)
                             what += ", " + std::to_string(summary.repeated) + " repeated entry(ies) listed once";
