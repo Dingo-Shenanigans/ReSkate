@@ -1,9 +1,16 @@
 #include "Launcher/gui_internal.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <latch>
 
 using namespace dingosdk::launcher_gui::detail;
+
+// This test drives the scanner without starting downloads or drawing mod rows.
+namespace dingosdk::launcher_gui::detail {
+Downloads::~Downloads() = default;
+std::string size_text(std::uint64_t) { std::abort(); }
+} // namespace dingosdk::launcher_gui::detail
 
 int main() {
     int failures = 0;
