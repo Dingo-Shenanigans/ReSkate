@@ -237,8 +237,9 @@ void register_perf_commands(Commands& registry) {
     textures.run = [](const Model&, const Values&, const Output& out) {
         const auto state = texture_handle_limit::use();
         if (!state.known) return out("The game's texture streaming is not running yet.");
-        out(std::format("{} of {} streamed textures in use ({}%). A warning shows at 90%; the game freezes at the limit.", state.taken,
-            state.limit, std::uint64_t{state.taken} * 100 / state.limit));
+        out(std::format("{} of {} streamed textures in use ({}%). A warning shows at 90%; {}", state.taken, state.limit,
+            std::uint64_t{state.taken} * 100 / state.limit,
+            state.soft_full ? "past the limit new textures load without their sharp mips." : "the game freezes at the limit."));
     };
     registry.add(std::move(textures));
 
