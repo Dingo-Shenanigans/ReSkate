@@ -52,6 +52,21 @@ bool initialize_bootstrap(std::uintptr_t base, std::string& failure) {
         return false;
     }
     logging::write(logging::Level::info, Channel::hooks, "Microsoft Detours hook service ready.");
+    // The service waits for a thread that is ending and starts its transaction over without a
+    // word (hooks.cpp, exiting_wait_ms). Said here, so a log shows when an install met one and
+    // what the wait cost. A transaction that failed all the same is a warning: its caller says
+    // which hook it was.
+    hook_observe_retries([](const HookRetries& met, HookStatus result) {
+        const auto cost = std::format("started over {} time(s), waited {:.3f} ms in all, {:.3f} ms at the longest",
+            met.tries, static_cast<double>(met.waited_us) / 1000.0, static_cast<double>(met.longest_wait_us) / 1000.0);
+        if (result == HookOk)
+            logging::write(logging::Level::info, logging::Channel::hooks, std::format(
+                "A hook transaction waited for a thread that was ending (last: thread {}): {}.", met.thread_id, cost));
+        else
+            logging::write(logging::Level::warning, logging::Channel::hooks, std::format(
+                "A hook transaction failed after it met a thread that refused suspension (last: thread {}): {}; {}.",
+                met.thread_id, cost, hook_status_string(result)));
+    });
     // The memory ledger, when RESKATE_MEMORY_TRACE asks for it: here, while the game is still
     // suspended and before the pools below are enlarged, so it sees who makes all of them.
     console::start_memory_trace_from_environment();

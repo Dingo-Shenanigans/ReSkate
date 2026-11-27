@@ -51,4 +51,16 @@ const char* WINAPI hook_status_string(HookStatus status);
 // has resumed enlisted threads. Read before issuing another hook operation.
 struct HookFailure { const char* operation{"none"}; LONG error{}; DWORD thread_id{}; };
 HookFailure hook_last_failure() noexcept;
+// What one hook operation met when threads refused suspension under its transaction: how many
+// tries started over, how long it waited for such threads in all and at the longest, and the id
+// of the last such thread. The service waits and starts over without a word; the runtime writes
+// these to the log (bootstrap.cpp), so a log shows when a transaction met one and what that cost.
+struct HookRetries { unsigned tries{}; unsigned long long waited_us{}, longest_wait_us{}; DWORD thread_id{}; };
+// Called on the calling thread after a hook operation that waited or started over, once every
+// thread runs again and the service's lock is released, with the operation's result: HookOk when
+// the threads it met were ending and the operation went through, a failure when one refused and
+// did not end or the tries ran out. One observer for the process; null takes it away. It must not
+// call the hook service.
+using HookRetryObserver = void (*)(const HookRetries&, HookStatus result);
+void WINAPI hook_observe_retries(HookRetryObserver observer) noexcept;
 }

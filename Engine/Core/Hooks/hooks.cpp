@@ -3,6 +3,7 @@
 #include <TlHelp32.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -68,6 +69,41 @@ HookStatus create_relay(Hook& hook) {
     hook.relay = allocation; hook.original = pointer;
     return HookOk;
 }
+// How long a transaction waits for a thread that refused suspension with access denied to finish
+// ending. A thread on its way out refuses before its handle is signaled, and a transaction that met
+// one failed at once. In a game launch of 2026-11-26 the runtime's own memory-line thread
+// (client_tick.cpp: one detached thread a line) wrote its line 5 ms before the overlay enabled its
+// swapchain hooks: the enable failed on that thread ("enlist thread", error 5), the overlay never
+// drew, and the plugins' button binds, which read the pad through the overlay's window, did nothing
+// in that session. A thread that refuses to be opened gets the same wait; that was not seen. The
+// wait runs with no thread suspended and ends as soon as the thread has. The 200 ms are a bound,
+// not what it takes: in the stress test on one PC (Test/exiting_threads_tests.cpp, six runs, 188
+// hook calls that met an ending thread) the longest wait was 0.4 ms, and in five of the runs all
+// waits together took under 0.01 ms.
+constexpr DWORD exiting_wait_ms = 200;
+// How many times a transaction is tried when a thread it met had ended or was ending. Four were not
+// enough: with threads ending without pause (Test/exiting_threads_tests.cpp) four tries in a row
+// met one once or twice in 800 transactions, which puts it at about one try in five. A thread that
+// refuses and has not ended after the wait above still fails the transaction on the spot.
+constexpr unsigned transaction_tries = 16;
+// What the operation running on this thread has met so far (hooks.h), and who is told.
+thread_local HookRetries last_retries;
+std::atomic<HookRetryObserver> retry_observer{};
+// Whether the thread has ended, waiting up to wait_ms for it. A wait is timed and added to the
+// operation's account. Never called with a thread suspended.
+bool ended_within(HANDLE thread, DWORD wait_ms, DWORD thread_id) {
+    if (!wait_ms) return WaitForSingleObject(thread, 0) == WAIT_OBJECT_0;
+    LARGE_INTEGER from{}, to{}, per_second{};
+    QueryPerformanceCounter(&from);
+    const bool ended = WaitForSingleObject(thread, wait_ms) == WAIT_OBJECT_0;
+    QueryPerformanceCounter(&to);
+    QueryPerformanceFrequency(&per_second);
+    const auto us = static_cast<unsigned long long>((to.QuadPart - from.QuadPart) * 1000000 / per_second.QuadPart);
+    last_retries.waited_us += us;
+    last_retries.longest_wait_us = std::max(last_retries.longest_wait_us, us);
+    last_retries.thread_id = thread_id;
+    return ended;
+}
 struct Threads {
     std::vector<HANDLE> handles;
     ~Threads() { for (const auto thread : handles) CloseHandle(thread); }
@@ -87,8 +123,13 @@ struct Threads {
                 // A terminating thread can reject full access while its object
                 // is still in the snapshot. Skip only an independently verified
                 // signaled thread; a live inaccessible thread must fail safely.
+                // A thread answering access denied may be ending: it is given
+                // exiting_wait_ms to end before it is called live.
                 const auto check = OpenThread(SYNCHRONIZE, FALSE, entry.th32ThreadID);
-                const bool exited = check && WaitForSingleObject(check, 0) == WAIT_OBJECT_0;
+                // Gone between the two opens: the same answer as above.
+                if (!check && GetLastError() == ERROR_INVALID_PARAMETER) continue;
+                const bool exited = check && ended_within(check,
+                    failure == ERROR_ACCESS_DENIED ? exiting_wait_ms : 0, entry.th32ThreadID);
                 if (check) CloseHandle(check);
                 if (exited) continue;
                 error = dingosdk::failure("open thread", static_cast<LONG>(failure), entry.th32ThreadID); break;
@@ -118,7 +159,7 @@ HookStatus transact(const std::vector<Change>& changes) {
     // Enumerate/open handles and allocate all project-owned storage before any
     // thread is suspended. The declared Detours vendor patch keeps its transaction
     // records off the shared heap for the same reason, including commit/abort.
-    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+    for (unsigned attempt = 0; attempt < transaction_tries; ++attempt) {
         Threads threads;
         auto error = threads.collect();
         if (error != NO_ERROR) return status(error);
@@ -138,11 +179,14 @@ HookStatus transact(const std::vector<Change>& changes) {
             error = DetourUpdateThread(thread);
             if (error == NO_ERROR) continue;
             const auto thread_id = GetThreadId(thread);
-            const bool exited = WaitForSingleObject(thread, 0) == WAIT_OBJECT_0;
             // UpdateThread poisons the transaction on failure. Abort/resume all
             // threads, then recollect; never commit after a failed enlistment.
             DetourTransactionAbort();
-            if (!exited || attempt == 3) return status(failure("enlist thread", error, thread_id));
+            // With every thread running again: a thread that refused suspension with
+            // access denied is ending, and is given exiting_wait_ms to finish.
+            const bool exited = ended_within(thread, error == ERROR_ACCESS_DENIED ? exiting_wait_ms : 0, thread_id);
+            if (!exited || attempt + 1 == transaction_tries) return status(failure("enlist thread", error, thread_id));
+            ++last_retries.tries; last_retries.thread_id = thread_id;
             retry = true;
             break;
         }
@@ -155,11 +199,20 @@ HookStatus transact(const std::vector<Change>& changes) {
     return HookProtectionFailed;
 }
 template<class F> HookStatus locked(F action) {
+    HookStatus result = HookOk;
     try {
         auto& r = registry(); std::lock_guard lock(r.mutex);
-        last_failure = {};
-        return action(r);
+        last_failure = {}; last_retries = {};
+        result = action(r);
     } catch (const std::bad_alloc&) { return HookOutOfMemory; }
+    // The lock is released and every thread runs: the observer may write its line. HookBatch
+    // ends through here in a destructor, so nothing the observer throws leaves this function.
+    if (last_retries.tries || last_retries.waited_us)
+        if (const auto observer = retry_observer.load()) {
+            const auto met = last_retries;
+            try { observer(met, result); } catch (...) {}
+        }
+    return result;
 }
 Hook* find(Registry& r, void* target) {
     const auto found = r.targets.find(target);
@@ -256,6 +309,7 @@ HookStatus WINAPI hook_apply_queued() {
     });
 }
 HookFailure hook_last_failure() noexcept { return last_failure; }
+void WINAPI hook_observe_retries(HookRetryObserver observer) noexcept { retry_observer.store(observer); }
 const char* WINAPI hook_status_string(HookStatus value) {
     switch (value) {
     case HookOk: return "success";
