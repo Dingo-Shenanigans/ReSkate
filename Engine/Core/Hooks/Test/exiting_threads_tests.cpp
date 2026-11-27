@@ -33,6 +33,17 @@ __declspec(noinline) int target(int value) {
 }
 
 int replacement(int value) { return original.load()(value) + 1000; }
+
+// What the service says its transactions met (hooks.h, HookRetries), added up. The observer runs
+// on the thread that made the hook call, which here is always the main one.
+unsigned met = 0, started_over = 0;
+unsigned long long waited_us = 0, longest_wait_us = 0;
+void observe(const dingosdk::HookRetries& retries, dingosdk::HookStatus) {
+    ++met;
+    started_over += retries.tries;
+    waited_us += retries.waited_us;
+    if (retries.longest_wait_us > longest_wait_us) longest_wait_us = retries.longest_wait_us;
+}
 } // namespace
 
 int main() {
@@ -44,6 +55,7 @@ int main() {
     expect(hook_prepare(at, reinterpret_cast<void*>(&replacement), &relay) == HookOk && relay, "the hook is prepared");
     if (failures) return 1;
     original.store(reinterpret_cast<Function>(relay));
+    hook_observe_retries(&observe);
 
     std::atomic<bool> stop{false};
     std::atomic<unsigned> started{};
@@ -82,6 +94,9 @@ int main() {
 
     std::printf("%d rounds in %lld ms while %u threads started and ended: %u transaction(s) refused\n", rounds,
         static_cast<long long>(took), during, refused);
+    // Printed, not judged: how often a transaction meets an ending thread depends on the PC.
+    std::printf("%u hook call(s) met a thread that was ending: %u tries started over; waited %.3f ms in all, %.3f ms at the longest\n",
+        met, started_over, static_cast<double>(waited_us) / 1000.0, static_cast<double>(longest_wait_us) / 1000.0);
     if (refused)
         std::printf("first refusal: status=%ld (%s), operation=%s error=%ld thread=%lu\n", static_cast<long>(first_status),
             hook_status_string(first_status), first.operation, static_cast<long>(first.error),
